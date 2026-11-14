@@ -1,0 +1,71 @@
+import { TerrainMeta } from '../api/types';
+
+export const mockTerrain: TerrainMeta = {
+  map_id: 'jezero-regional-200m',
+  title: 'Jezero — Trek الإقليمي 200 م',
+  width: 353,
+  height: 298,
+  cell_size_meters: 200,
+  version: '4fb5ccfa255e5517a86050b5184c715f07cdb142688d96b7f7416c6ed6a8eb88',
+  regional_scale: 'regional',
+  projection: {
+    type: 'mars_spherical_equirectangular',
+    radiusMeters: 3396190.0,
+    standardParallelDegrees: 18.46611095,
+    centralLongitudeDegrees: 77.42982155,
+    latitudeOriginDegrees: 18.46611095,
+  },
+  affine: [
+    200.0,
+    0.0,
+    -35300.0,
+    0.0,
+    -200.0,
+    29800.0,
+  ],
+  requested_bounds: {
+    west: 76.80291421306124,
+    south: 17.96348644765699,
+    east: 78.05672888693876,
+    north: 18.96873545234301,
+  },
+  raster_bounds: {
+    west: 76.80196141291616,
+    south: 17.96336692522817,
+    east: 78.05768168708384,
+    north: 18.968854974771837,
+  },
+  thresholds: {
+    blockedSlopeGreaterOrEqualDegrees: 20,
+    blockedLocalDeviationGreaterOrEqualMeters: 80,
+    localMeanWindowPlanningCells: 5,
+    localMeanWindowNominalMeters: 1000,
+    safetyBufferMeters: 200,
+    slopeCostBreaksDegrees: [2, 5, 10],
+    localDeviationCostBreaksMeters: [10, 30, 60],
+  },
+  legend: {
+    costs: [-1, 1, 2, 4, 8],
+    labels: {
+      '-1': 'blocked',
+      '1': 'low',
+      '2': 'moderate',
+      '4': 'high',
+      '8': 'very_high',
+    },
+  },
+  warnings: [
+    'Regional planning only, not small-rock or rover-scale hazard detection.',
+    '200 m is nominal raster spacing, not independent measurement accuracy at every cell.',
+    'Thresholds and a one-cell safety buffer are project assumptions, not NASA flight limits.',
+    'Negative elevations are normal; elevation sign and global mean do not define obstacles.',
+    'Physical slope accuracy varies with source coverage, interpolation and blend artifacts.',
+    'Routes connect snapped cell centers; user-selected positions are not exact rover waypoints.',
+  ],
+  source: {
+    sourceType: 'published_HRSC_MOLA_blend_v2',
+    referencePage: 'https://astrogeology.usgs.gov/search/map/mars_mgs_mola_mex_hrsc_blended_dem_global_200m',
+    nominal_cell_size_meters: 200,
+    navigation_scale: 'regional',
+  },
+};

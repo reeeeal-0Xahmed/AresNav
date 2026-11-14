@@ -1,0 +1,22 @@
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Http\Request;
+
+define('LARAVEL_START', microtime(true));
+
+// Determine if the application is in maintenance mode...
+if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
+    require $maintenance;
+}
+
+// Register the Composer autoloader...
+$loader = require __DIR__.'/../vendor/autoload.php';
+$loader->setPsr4('App\\', __DIR__.'/../app/');
+$loader->setPsr4('Database\\Seeders\\', __DIR__.'/../database/seeders/');
+
+// Bootstrap Laravel and handle the request...
+/** @var Application $app */
+$app = require_once __DIR__.'/../bootstrap/app.php';
+
+$app->handleRequest(Request::capture());

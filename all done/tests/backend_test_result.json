@@ -1,0 +1,107 @@
+{
+    "status": "passed",
+    "framework": "13.42.0",
+    "checks": 19029,
+    "map_id": "jezero-regional-200m",
+    "map_version": "4fb5ccfa255e5517a86050b5184c715f07cdb142688d96b7f7416c6ed6a8eb88",
+    "dimensions": [
+        353,
+        298
+    ],
+    "cases": [
+        {
+            "case": "southwest_to_northeast",
+            "request_id": "b1dbbab6-7480-4a0d-aa8d-3684c35d594d",
+            "requested_start": {
+                "lon": 77,
+                "lat": 18.1
+            },
+            "requested_target": {
+                "lon": 77.9,
+                "lat": 18.8
+            },
+            "costs": [
+                600,
+                600,
+                600
+            ],
+            "distance_meters": [
+                96400,
+                96400,
+                96400
+            ],
+            "verdict": "NO-GO",
+            "elapsed_seconds_on_sandbox": 0.1642
+        },
+        {
+            "case": "northwest_to_southeast",
+            "request_id": "27e2c087-bc71-4559-8d40-a1dd245163bf",
+            "requested_start": {
+                "lon": 76.85,
+                "lat": 18.9
+            },
+            "requested_target": {
+                "lon": 78,
+                "lat": 18.05
+            },
+            "costs": [
+                774,
+                774,
+                774
+            ],
+            "distance_meters": [
+                121400,
+                121400,
+                121400
+            ],
+            "verdict": "NO-GO",
+            "elapsed_seconds_on_sandbox": 0.1796
+        },
+        {
+            "case": "grid_input",
+            "request_id": "9e3b9bf8-0533-4087-a0ad-87442d7aec03",
+            "requested_start": {
+                "x": 55,
+                "y": 257
+            },
+            "requested_target": {
+                "x": 308,
+                "y": 50
+            },
+            "costs": [
+                600,
+                600,
+                600
+            ],
+            "distance_meters": [
+                96400,
+                96400,
+                96400
+            ],
+            "verdict": "NO-GO",
+            "elapsed_seconds_on_sandbox": 0.1528
+        },
+        {
+            "case": "same_point",
+            "request_id": "5f158a63-86d5-456b-85ae-3a16ecb172d3",
+            "requested_start": {
+                "lon": 77.42982155,
+                "lat": 18.46611095
+            },
+            "requested_target": {
+                "lon": 77.42982155,
+                "lat": 18.46611095
+            },
+            "costs": [
+                0
+            ],
+            "distance_meters": [
+                0
+            ],
+            "verdict": "GO",
+            "elapsed_seconds_on_sandbox": 0.0404
+        }
+    ],
+    "database": "isolated SQLite in-memory",
+    "note": "Full integration: Laravel controller\/services, RouteBriefing, SpaceWeather, SciencePoi, and native C++ solver"
+}

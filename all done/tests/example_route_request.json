@@ -1,0 +1,12 @@
+{
+    "map_id": "jezero-regional-200m",
+    "map_version": "4fb5ccfa255e5517a86050b5184c715f07cdb142688d96b7f7416c6ed6a8eb88",
+    "start": {
+        "lon": 77,
+        "lat": 18.1
+    },
+    "target": {
+        "lon": 77.9,
+        "lat": 18.8
+    }
+}
