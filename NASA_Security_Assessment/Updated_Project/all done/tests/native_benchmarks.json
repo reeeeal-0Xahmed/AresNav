@@ -1,0 +1,49 @@
+{
+  "status": "passed",
+  "cases": [
+    {
+      "case": "southwest_to_northeast",
+      "seconds_on_sandbox": 0.1912,
+      "start": {
+        "x": 55,
+        "y": 257
+      },
+      "target": {
+        "x": 308,
+        "y": 50
+      },
+      "costs": [
+        600.0,
+        600.0,
+        600.0
+      ],
+      "distance_meters": [
+        96400,
+        96400,
+        96400
+      ]
+    },
+    {
+      "case": "northwest_to_southeast",
+      "seconds_on_sandbox": 0.2642,
+      "start": {
+        "x": 13,
+        "y": 20
+      },
+      "target": {
+        "x": 336,
+        "y": 272
+      },
+      "costs": [
+        774.0,
+        774.0,
+        774.0
+      ],
+      "distance_meters": [
+        121400,
+        121400,
+        121400
+      ]
+    }
+  ]
+}

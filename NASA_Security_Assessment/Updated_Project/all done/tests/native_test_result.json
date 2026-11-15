@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "tests_run": 7,
+  "failures": [],
+  "errors": [],
+  "duration_seconds": 0.069,
+  "solver": "laravel/bin/rover_pathfinder"
+}

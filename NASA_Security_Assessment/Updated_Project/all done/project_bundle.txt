@@ -1,0 +1,2770 @@
+=== PROJECT ROOT: . ===
+=== FILE TREE ===
+.
+./API_CONTRACT_AR.md
+./laravel
+./laravel/database
+./laravel/database/migrations
+./laravel/database/migrations/2026_11_14_000001_create_mars_route_requests_table.php
+./laravel/database/migrations/2026_11_14_000002_add_input_coordinates_to_mars_route_requests_table.php
+./laravel/database/migrations/2026_11_14_000003_create_science_pois_table.php
+./laravel/database/seeders
+./laravel/database/seeders/SciencePoiSeeder.php
+./laravel/config
+./laravel/config/mars.php
+./laravel/app
+./laravel/app/Exceptions
+./laravel/app/Exceptions/MarsPlanningException.php
+./laravel/app/Models
+./laravel/app/Models/SciencePoi.php
+./laravel/app/Models/MarsRouteRequest.php
+./laravel/app/Services
+./laravel/app/Services/SpaceWeather.php
+./laravel/app/Services/MarsTerrainMap.php
+./laravel/app/Services/MarsCoordinates.php
+./laravel/app/Services/RouteBriefing.php
+./laravel/app/Services/MarsPathfinder.php
+./laravel/app/Http
+./laravel/app/Http/Controllers
+./laravel/app/Console
+./laravel/app/Console/Commands
+./laravel/storage
+./laravel/storage/app
+./laravel/storage/app/private
+./laravel/routes
+./laravel/routes/mars.php
+./README_AR.md
+./python
+./python/requirements.txt
+./python/build_regional_terrain.py
+./python/plot_regional_terrain.py
+./MERGE_README_AR.md
+./tests
+./tests/northwest_to_southeast_result.json
+./tests/coordinates_unit.php
+./tests/briefing_unit.php
+./tests/native_test_result.json
+./tests/backend_test_result.json
+./tests/space_weather_unit.php
+./tests/example_route_response.json
+./tests/southwest_to_northeast_result.json
+./tests/backend_integration.php
+./tests/example_route_request.json
+./tests/native_benchmarks.json
+./tests/test_native_routes.py
+./data
+./data/terrain_analysis.npz
+./data/native_source_window_metadata.json
+./data/global_source_metadata.json
+./data/native_source_window.tif
+./data/COVERAGE_FINDINGS_AR.md
+./data/metadata.json
+./data/regional_terrain_preview.png
+./data/elevations.json
+./data/elevations.tif
+./data/build_result.json
+./native
+./native/rover_pathfinder.cpp
+./SOURCES.md
+./project_bundle.txt
+=== SOURCE CODE ===
+
+
+==================== FILE: ./laravel/database/migrations/2026_11_14_000001_create_mars_route_requests_table.php ====================
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::create('mars_route_requests', function (Blueprint $table): void {
+            $table->uuid('id')->primary();
+            $table->char('session_hash', 64)->index();
+            $table->string('map_id', 50);
+            $table->char('map_version', 64);
+            $table->unsignedInteger('start_x');
+            $table->unsignedInteger('start_y');
+            $table->unsignedInteger('target_x');
+            $table->unsignedInteger('target_y');
+            $table->string('status', 20)->index();
+            $table->json('result')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('mars_route_requests');
+    }
+};
+
+
+==================== FILE: ./laravel/database/migrations/2026_11_14_000002_add_input_coordinates_to_mars_route_requests_table.php ====================
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::table('mars_route_requests', function (Blueprint $table): void {
+            $table->json('input_coordinates')->nullable();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('mars_route_requests', function (Blueprint $table): void {
+            $table->dropColumn('input_coordinates');
+        });
+    }
+};
+
+
+==================== FILE: ./laravel/database/migrations/2026_11_14_000003_create_science_pois_table.php ====================
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::create('science_pois', function (Blueprint $table): void {
+            $table->id();
+            $table->string('poi_code')->unique();
+            $table->string('name');
+            $table->text('description');
+            $table->decimal('lat', 10, 7);
+            $table->decimal('lon', 10, 7);
+            $table->string('type')->index();
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('science_pois');
+    }
+};
+
+
+==================== FILE: ./laravel/database/seeders/SciencePoiSeeder.php ====================
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\SciencePoi;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Http;
+
+/**
+ * Loads Perseverance (Mars 2020) drive waypoints from NASA JPL MMGIS.
+ * NOTE: these are rover waypoints, not curated science targets. Add real science
+ * targets (with their source) as extra rows of another `type` for the demo.
+ * Run: php artisan db:seed --class=SciencePoiSeeder
+ */
+class SciencePoiSeeder extends Seeder
+{
+    private const SOURCE_URL = 'https://mars.nasa.gov/mmgis-maps/M20/Layers/json/M20_waypoints.json';
+    private const KEEP_LAST = 60; // most recent waypoints that fall inside the map bounds
+
+    public function run(): void
+    {
+        $bounds = config('mars.maps.jezero-regional-200m.bounds');
+        $response = Http::timeout(15)->get(self::SOURCE_URL);
+        if ($response->failed()) {
+            $this->command->error('Could not reach NASA JPL MMGIS. Check the connection / URL.');
+            return;
+        }
+
+        $inside = [];
+        foreach ($response->json()['features'] ?? [] as $feature) {
+            $c = $feature['geometry']['coordinates'] ?? [];
+            if (count($c) < 2 || $c[0] < $bounds['west'] || $c[0] > $bounds['east'] || $c[1] < $bounds['south'] || $c[1] > $bounds['north']) {
+                continue;
+            }
+            $inside[] = $feature;
+        }
+        $this->command->info(count($inside).' waypoints fall inside the map bounds.');
+
+        $count = 0;
+        foreach (array_slice($inside, -self::KEEP_LAST) as $feature) {
+            $p = $feature['properties'] ?? [];
+            $c = $feature['geometry']['coordinates'];
+            $sol = $p['sol'] ?? $count;
+            $site = $p['site'] ?? '0';
+            $drive = $p['drive'] ?? '0';
+            SciencePoi::updateOrCreate(
+                ['poi_code' => "m20_sol_{$sol}_s{$site}_d{$drive}"],
+                [
+                    'name' => "Perseverance waypoint — site {$site}, drive {$drive} (sol {$sol})",
+                    'description' => "Perseverance drive waypoint recorded on sol {$sol}.",
+                    'lon' => $c[0],
+                    'lat' => $c[1],
+                    'type' => 'rover_waypoint',
+                    'metadata' => [
+                        'mission' => 'Mars 2020 Perseverance',
+                        'sol' => $sol,
+                        'elevation_m' => $c[2] ?? null,
+                        'source' => 'NASA JPL MMGIS',
+                    ],
+                ]
+            );
+            $count++;
+        }
+        $this->command->info("Seeded {$count} waypoints.");
+    }
+}
+
+
+==================== FILE: ./laravel/config/mars.php ====================
+<?php
+
+$trek = 'https://trek.nasa.gov/tiles/mars/EQ';
+
+return [
+    'binary' => env('MARS_PATHFINDER_BINARY', base_path('bin/rover_pathfinder')),
+    'timeout_seconds' => (int) env('MARS_PATHFINDER_TIMEOUT', 120),
+    'temporary_directory' => storage_path('app/private/mars/tmp'),
+
+    'maps' => [
+        'jezero-regional-200m' => [
+            'title' => 'Jezero — Trek الإقليمي 200 م',
+            'terrain_file' => storage_path('app/private/mars/jezero-regional-200m/terrain.json'),
+            'elevations_file' => storage_path('app/private/mars/jezero-regional-200m/elevations.json'),
+            // Same box as requested_bounds inside terrain.json; used to filter POIs without parsing the terrain.
+            'bounds' => [
+                'west' => 76.80291421306124, 'south' => 17.96348644765699,
+                'east' => 78.05672888693876, 'north' => 18.96873545234301,
+            ],
+        ],
+    ],
+
+    // All values are planning assumptions, not NASA operational limits.
+    'briefing' => [
+        'walk_speed_kmh' => (float) env('MARS_WALK_SPEED_KMH', 2.0),
+        'eva_budget_hours' => (float) env('MARS_EVA_BUDGET_HOURS', 8.0),
+        'poi_radius_m' => 2000,
+        'slope_caution_deg' => 10,
+        'slope_nogo_deg' => 20,
+        'high_cost_share_caution' => 0.25,
+    ],
+
+    // Tile URLs below were NOT verified when this file was written: run `php artisan mars:check-layers`.
+    'layers' => [
+        'base_viking' => ['title' => 'Viking MDIM 2.1 mosaic (232 m)', 'kind' => 'base',
+            'url' => $trek.'/Mars_Viking_MDIM21_InvCyl_mosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg'],
+        'hirise_jezero' => ['title' => 'MRO HiRISE Jezero mosaic', 'kind' => 'overlay',
+            'url' => $trek.'/MRO_HiRISE_Jezero_Mosaic_Controlled/1.0.0/default/default028mm/{z}/{y}/{x}.png'],
+        'geology' => ['title' => 'USGS geologic map (100 m)', 'kind' => 'overlay',
+            'url' => $trek.'/Mars_USGS_Geologic_Map_Global_100m/1.0.0/default/default028mm/{z}/{y}/{x}.png'],
+        'mola_color' => ['title' => 'MGS MOLA colour shaded relief (463 m)', 'kind' => 'elevation',
+            'url' => $trek.'/Mars_MGS_MOLA_ClrShade_merge_global_463m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg'],
+        // Layer name is the one listed in the challenge's data resources; file extension is a guess.
+        'ctx_5m' => ['title' => 'MRO CTX global mosaic (5 m)', 'kind' => 'base',
+            'url' => $trek.'/CTX_beta01_uncontrolled_5m_Caltech/1.0.0/default/default028mm/{z}/{y}/{x}.png'],
+    ],
+];
+
+
+==================== FILE: ./laravel/app/Exceptions/MarsPlanningException.php ====================
+<?php
+
+namespace App\Exceptions;
+
+use RuntimeException;
+
+final class MarsPlanningException extends RuntimeException
+{
+    public function __construct(
+        string $message,
+        public readonly string $errorCode = 'PLANNER_ERROR',
+        public readonly int $httpStatus = 500,
+    ) {
+        parent::__construct($message);
+    }
+}
+
+
+==================== FILE: ./laravel/app/Models/SciencePoi.php ====================
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class SciencePoi extends Model
+{
+    protected $fillable = ['poi_code', 'name', 'description', 'lat', 'lon', 'type', 'metadata'];
+
+    protected $casts = ['metadata' => 'array', 'lat' => 'float', 'lon' => 'float'];
+}
+
+
+==================== FILE: ./laravel/app/Models/MarsRouteRequest.php ====================
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+final class MarsRouteRequest extends Model
+{
+    public $incrementing = false;
+    protected $keyType = 'string';
+    protected $guarded = [];
+    protected $hidden = ['session_hash'];
+    protected $casts = [
+        'start_x' => 'integer', 'start_y' => 'integer',
+        'target_x' => 'integer', 'target_y' => 'integer',
+        'input_coordinates' => 'array',
+        'result' => 'array',
+    ];
+}
+
+
+==================== FILE: ./laravel/app/Services/SpaceWeather.php ====================
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Throwable;
+
+/**
+ * NASA DONKI solar-flare status used as a RADIATION PROXY.
+ * DONKI reports flares as seen from Earth; this is NOT a Mars surface dose measurement.
+ *
+ * Fixes vs. the first version: failures return UNKNOWN (never "SAFE"), failures are
+ * not cached, and the strongest flare in the window is used (not just the last item).
+ */
+final class SpaceWeather
+{
+    private const CACHE_KEY = 'nasa_donki_space_weather';
+    private const WINDOW_DAYS = 7;
+    private const LETTER_RANK = ['A' => 1, 'B' => 2, 'C' => 3, 'M' => 4, 'X' => 5];
+
+    public function current(): array
+    {
+        $cached = Cache::get(self::CACHE_KEY);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        try {
+            $response = Http::timeout(10)->get('https://api.nasa.gov/DONKI/FLR', [
+                'startDate' => now()->subDays(self::WINDOW_DAYS)->format('Y-m-d'),
+                'endDate' => now()->format('Y-m-d'),
+                'api_key' => config('services.nasa.key', 'DEMO_KEY'),
+            ]);
+            if ($response->successful() && is_array($response->json())) {
+                $status = $this->classify($response->json());
+                Cache::put(self::CACHE_KEY, $status, now()->addHours(3));
+                return $status;
+            }
+            Log::warning('DONKI request failed', ['status' => $response->status()]);
+        } catch (Throwable $e) {
+            Log::warning('DONKI exception: '.$e->getMessage());
+        }
+
+        return $this->unknown();
+    }
+
+    /** @param list<array<string,mixed>> $flares */
+    public function classify(array $flares): array
+    {
+        $strongest = null;
+        $bestScore = -1.0;
+        foreach ($flares as $flare) {
+            $class = (string) ($flare['classType'] ?? '');
+            if (!preg_match('/^([ABCMX])(\d+(?:\.\d+)?)$/', $class, $m)) {
+                continue;
+            }
+            $score = self::LETTER_RANK[$m[1]] * 1000 + (float) $m[2];
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $strongest = ['class' => $class, 'letter' => $m[1], 'mag' => (float) $m[2], 'time' => $flare['beginTime'] ?? null];
+            }
+        }
+
+        $status = 'NOMINAL';
+        if ($strongest !== null) {
+            if ($strongest['letter'] === 'X') {
+                $status = 'HIGH_RADIATION_WARNING';
+            } elseif ($strongest['letter'] === 'M' && $strongest['mag'] >= 5.0) {
+                $status = 'ELEVATED';
+            }
+        }
+
+        return [
+            'radiation_status' => $status,
+            'strongest_flare_class' => $strongest['class'] ?? 'NONE',
+            'event_time' => $strongest['time'] ?? null,
+            'window_days' => self::WINDOW_DAYS,
+            'basis' => 'earth_view_flare_proxy',
+            'source' => 'NASA DONKI FLR',
+            'checked_at' => now()->toIso8601String(),
+        ];
+    }
+
+    private function unknown(): array
+    {
+        return [
+            'radiation_status' => 'UNKNOWN',
+            'strongest_flare_class' => null,
+            'event_time' => null,
+            'window_days' => self::WINDOW_DAYS,
+            'basis' => 'earth_view_flare_proxy',
+            'source' => 'NASA DONKI FLR (unavailable)',
+            'checked_at' => now()->toIso8601String(),
+        ];
+    }
+}
+
+
+==================== FILE: ./laravel/app/Services/MarsTerrainMap.php ====================
+<?php
+
+namespace App\Services;
+
+use App\Exceptions\MarsPlanningException;
+use Illuminate\Contracts\Config\Repository;
+use JsonException;
+
+final class MarsTerrainMap
+{
+    public function __construct(private readonly Repository $config) {}
+
+    public function load(string $mapId): array
+    {
+        $settings = $this->config->get('mars.maps.'.$mapId);
+        if (!is_array($settings)) {
+            throw new MarsPlanningException('الخريطة المطلوبة غير موجودة.', 'MAP_NOT_FOUND', 404);
+        }
+        $file = $settings['terrain_file'] ?? '';
+        if (!is_string($file) || !is_file($file) || !is_readable($file)) {
+            throw new MarsPlanningException('ملف التضاريس غير متاح على السيرفر.', 'TERRAIN_UNAVAILABLE');
+        }
+        try {
+            $text = file_get_contents($file);
+            if ($text === false) {
+                throw new MarsPlanningException('تعذر قراءة التضاريس.', 'TERRAIN_UNAVAILABLE');
+            }
+            $data = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new MarsPlanningException('ملف التضاريس ليس JSON صالحًا.', 'INVALID_TERRAIN');
+        }
+        if (!is_array($data)) {
+            throw new MarsPlanningException('ملف التضاريس غير صالح.', 'INVALID_TERRAIN');
+        }
+
+        $width = $data['width'] ?? null;
+        $height = $data['height'] ?? null;
+        $grid = $data['grid'] ?? null;
+        $metadata = $data['terrainMetadata'] ?? null;
+        if (!is_int($width) || !is_int($height) || $width <= 0 || $height <= 0 || $width * $height > 1_000_000 ||
+            !is_array($grid) || !array_is_list($grid) || count($grid) !== $height || !is_array($metadata)) {
+            throw new MarsPlanningException('أبعاد أو بيانات التضاريس غير صالحة.', 'INVALID_TERRAIN');
+        }
+        foreach ($grid as $row) {
+            if (!is_array($row) || !array_is_list($row) || count($row) !== $width) {
+                throw new MarsPlanningException('صفوف التضاريس غير متطابقة.', 'INVALID_TERRAIN');
+            }
+            foreach ($row as $cost) {
+                if (!is_int($cost) || !in_array($cost, [-1, 1, 2, 4, 8], true)) {
+                    throw new MarsPlanningException('تكلفة الخلية غير صالحة.', 'INVALID_TERRAIN');
+                }
+            }
+        }
+
+        MarsCoordinates::assertMetadata($metadata);
+        $cellSize = (float) $metadata['cellSizeMeters'];
+        try {
+            $version = hash('sha256', json_encode([
+                'width' => $width,
+                'height' => $height,
+                'grid' => $grid,
+                'terrainMetadata' => $metadata,
+            ], JSON_THROW_ON_ERROR));
+        } catch (JsonException $exception) {
+            throw new MarsPlanningException('تعذر تثبيت نسخة التضاريس.', 'INVALID_TERRAIN');
+        }
+
+        return [
+            'map_id' => $mapId,
+            'title' => $settings['title'] ?? $mapId,
+            'version' => $version,
+            'width' => $width,
+            'height' => $height,
+            'cell_size_meters' => $cellSize,
+            'grid' => $grid,
+            'terrain_metadata' => $metadata,
+            'projection' => $metadata['projection'],
+            'affine' => MarsCoordinates::assertAffine($metadata['affine']),
+            'requested_bounds' => $metadata['requestedBounds'],
+            'raster_bounds' => $metadata['rasterBounds'],
+            'regional_scale' => $metadata['navigationScale'] ?? 'regional',
+            'warnings' => $metadata['warnings'],
+            'thresholds' => $metadata['thresholds'],
+            'source' => $this->safeSource($metadata),
+        ];
+    }
+
+    public function publicPayload(array $map): array
+    {
+        $metadata = $map['terrain_metadata'];
+        $payload = [
+            'map_id' => $map['map_id'],
+            'title' => $map['title'],
+            'width' => $map['width'],
+            'height' => $map['height'],
+            'grid' => $map['grid'],
+            'version' => $map['version'],
+            'projection' => $map['projection'],
+            'affine' => $map['affine'],
+            'requested_bounds' => $map['requested_bounds'],
+            'raster_bounds' => $map['raster_bounds'],
+            'regional_scale' => $map['regional_scale'],
+            'warnings' => $map['warnings'],
+            'source' => $map['source'],
+            'thresholds' => $map['thresholds'],
+            'legend' => [
+                'costs' => [-1, 1, 2, 4, 8],
+                'labels' => ['-1' => 'blocked', '1' => 'low', '2' => 'moderate', '4' => 'high', '8' => 'very_high'],
+            ],
+            'cell_size_meters' => $map['cell_size_meters'],
+        ];
+        return $payload;
+    }
+
+    public function resultMetadata(array $map): array
+    {
+        $metadata = $map['terrain_metadata'];
+        unset($metadata['sourceDem']);
+        return $metadata;
+    }
+
+    public function coordinateToCell(array $coordinate, array $map, string $label): array
+    {
+        MarsCoordinates::assertFiniteNumber($coordinate['lon'] ?? null, $label.' longitude');
+        MarsCoordinates::assertFiniteNumber($coordinate['lat'] ?? null, $label.' latitude');
+        $bounds = $map['requested_bounds'];
+        if ((float) $coordinate['lon'] < (float) $bounds['west'] || (float) $coordinate['lon'] > (float) $bounds['east'] ||
+            (float) $coordinate['lat'] < (float) $bounds['south'] || (float) $coordinate['lat'] > (float) $bounds['north']) {
+            throw new MarsPlanningException($label.' خارج الحدود الجغرافية المطلوبة.', 'OUT_OF_BOUNDS', 422);
+        }
+        $projected = MarsCoordinates::project($coordinate, $map['terrain_metadata']);
+        $affine = $map['affine'];
+        $determinant = $affine[0] * $affine[4] - $affine[1] * $affine[3];
+        if (abs($determinant) < 1e-12) {
+            throw new MarsPlanningException('تحويل التضاريس غير قابل للعكس.', 'INVALID_TERRAIN');
+        }
+        $dx = $projected['x'] - $affine[2];
+        $dy = $projected['y'] - $affine[5];
+        $column = ($affine[4] * $dx - $affine[1] * $dy) / $determinant;
+        $row = (-$affine[3] * $dx + $affine[0] * $dy) / $determinant;
+        return ['x' => (int) floor($column), 'y' => (int) floor($row)];
+    }
+
+    public function cellCenter(array $map, array $point): array
+    {
+        return MarsCoordinates::cellCenter((int) $point['x'], (int) $point['y'], $map['terrain_metadata']);
+    }
+
+    public function assertUsablePoint(array $map, array $point, string $label): void
+    {
+        $x = $point['x'] ?? null;
+        $y = $point['y'] ?? null;
+        if (!is_int($x) || !is_int($y) || $x < 0 || $x >= $map['width'] || $y < 0 || $y >= $map['height']) {
+            throw new MarsPlanningException($label.' خارج حدود الشبكة.', 'OUT_OF_BOUNDS', 422);
+        }
+        if ($map['grid'][$y][$x] < 0) {
+            throw new MarsPlanningException($label.' تقع على خلية ممنوعة.', 'BLOCKED_POINT', 422);
+        }
+    }
+
+    private function safeSource(array $metadata): array
+    {
+        $source = is_array($metadata['source'] ?? null) ? $metadata['source'] : [];
+        $sourceUrl = $metadata['sourceUrl'] ?? null;
+        if (is_string($sourceUrl) && !isset($source['url']) && !isset($source['originalUrl'])) {
+            $source['url'] = $sourceUrl;
+        }
+        unset($source['sourceDem'], $source['path'], $source['file'], $source['filename']);
+        $source['nominal_cell_size_meters'] = $source['nominalPixelSpacingMeters'] ?? $metadata['cellSizeMeters'] ?? null;
+        $source['navigation_scale'] = $metadata['navigationScale'] ?? 'regional';
+        return $source;
+    }
+}
+
+
+==================== FILE: ./laravel/app/Services/MarsCoordinates.php ====================
+<?php
+
+namespace App\Services;
+
+use App\Exceptions\MarsPlanningException;
+
+final class MarsCoordinates
+{
+    public const RADIUS_METERS = 3396190.0;
+
+    /** @param array{lon:int|float,lat:int|float} $coordinate */
+    public static function project(array $coordinate, array $metadata): array
+    {
+        self::assertFiniteNumber($coordinate['lon'] ?? null, 'longitude');
+        self::assertFiniteNumber($coordinate['lat'] ?? null, 'latitude');
+        self::assertProjectionMetadata($metadata);
+
+        $projection = $metadata['projection'];
+        $latTs = self::radians((float) $projection['standardParallelDegrees']);
+        $lon0 = (float) $projection['centralLongitudeDegrees'];
+        $lat0 = (float) $projection['latitudeOriginDegrees'];
+        $radius = (float) $projection['radiusMeters'];
+
+        return [
+            'x' => $radius * cos($latTs) * self::radians((float) $coordinate['lon'] - $lon0),
+            'y' => $radius * self::radians((float) $coordinate['lat'] - $lat0),
+        ];
+    }
+
+    /** @return array{lon:float,lat:float} */
+    public static function inverse(array $projected, array $metadata): array
+    {
+        self::assertFiniteNumber($projected['x'] ?? null, 'projected x');
+        self::assertFiniteNumber($projected['y'] ?? null, 'projected y');
+        self::assertProjectionMetadata($metadata);
+
+        $projection = $metadata['projection'];
+        $latTs = self::radians((float) $projection['standardParallelDegrees']);
+        $lon0 = (float) $projection['centralLongitudeDegrees'];
+        $lat0 = (float) $projection['latitudeOriginDegrees'];
+        $radius = (float) $projection['radiusMeters'];
+
+        return [
+            'lon' => rad2deg((float) $projected['x'] / ($radius * cos($latTs))) + $lon0,
+            'lat' => rad2deg((float) $projected['y'] / $radius) + $lat0,
+        ];
+    }
+
+    /** @return array{lon:float,lat:float} */
+    public static function cellCenter(int $x, int $y, array $metadata): array
+    {
+        $affine = self::assertAffine($metadata['affine'] ?? null);
+        $projected = [
+            'x' => $affine[0] * ($x + 0.5) + $affine[1] * ($y + 0.5) + $affine[2],
+            'y' => $affine[3] * ($x + 0.5) + $affine[4] * ($y + 0.5) + $affine[5],
+        ];
+        return self::inverse($projected, $metadata);
+    }
+
+    /** @return array{0:float,1:float,2:float,3:float,4:float,5:float} */
+    public static function assertAffine(mixed $affine): array
+    {
+        if (!is_array($affine) || !array_is_list($affine) || count($affine) !== 6) {
+            throw new MarsPlanningException('التحويل الجغرافي للتضاريس غير صالح.', 'INVALID_TERRAIN');
+        }
+        $values = [];
+        foreach ($affine as $value) {
+            self::assertFiniteNumber($value, 'affine');
+            $values[] = (float) $value;
+        }
+        if (abs($values[1]) > 1e-12 || abs($values[3]) > 1e-12 || $values[0] <= 0 || $values[4] >= 0 || abs($values[0] + $values[4]) > 1e-9 * max(1.0, abs($values[0]))) {
+            throw new MarsPlanningException('تحويل التضاريس ليس شبكة مترية شمالية مربعة.', 'INVALID_TERRAIN');
+        }
+        return $values;
+    }
+
+    public static function assertProjectionMetadata(array $metadata): void
+    {
+        $projection = $metadata['projection'] ?? null;
+        if (!is_array($projection) || ($projection['type'] ?? null) !== 'mars_spherical_equirectangular') {
+            throw new MarsPlanningException('إسقاط التضاريس غير مدعوم.', 'INVALID_TERRAIN');
+        }
+        foreach (['radiusMeters', 'standardParallelDegrees', 'centralLongitudeDegrees', 'latitudeOriginDegrees'] as $key) {
+            self::assertFiniteNumber($projection[$key] ?? null, 'projection');
+        }
+        if (abs((float) $projection['radiusMeters'] - self::RADIUS_METERS) > 1e-6) {
+            throw new MarsPlanningException('نصف قطر المريخ في التضاريس غير مدعوم.', 'INVALID_TERRAIN');
+        }
+    }
+
+    public static function assertMetadata(array $metadata): void
+    {
+        foreach (['cellSizeMeters'] as $key) {
+            self::assertFiniteNumber($metadata[$key] ?? null, $key);
+            if ((float) $metadata[$key] <= 0) {
+                throw new MarsPlanningException('بيانات الخلية في التضاريس غير صالحة.', 'INVALID_TERRAIN');
+            }
+        }
+        $center = $metadata['center'] ?? null;
+        if (!is_array($center)) {
+            throw new MarsPlanningException('مركز التضاريس غير صالح.', 'INVALID_TERRAIN');
+        }
+        self::assertFiniteNumber($center['lon'] ?? null, 'center longitude');
+        self::assertFiniteNumber($center['lat'] ?? null, 'center latitude');
+        $area = $metadata['areaSizeMeters'] ?? null;
+        if (!is_array($area) || array_diff(['width', 'height'], array_keys($area)) !== []) {
+            throw new MarsPlanningException('حجم منطقة التضاريس غير صالح.', 'INVALID_TERRAIN');
+        }
+        foreach (['width', 'height'] as $dimension) {
+            self::assertFiniteNumber($area[$dimension], 'area size');
+            if ((float) $area[$dimension] <= 0) {
+                throw new MarsPlanningException('حجم منطقة التضاريس غير صالح.', 'INVALID_TERRAIN');
+            }
+        }
+        if (!is_string($metadata['crsWkt'] ?? null) || trim($metadata['crsWkt']) === '') {
+            throw new MarsPlanningException('مرجع الإحداثيات في التضاريس غير صالح.', 'INVALID_TERRAIN');
+        }
+        self::assertAffine($metadata['affine'] ?? null);
+        self::assertProjectionMetadata($metadata);
+        foreach (['requestedBounds', 'rasterBounds'] as $key) {
+            $bounds = $metadata[$key] ?? null;
+            $boundKeys = is_array($bounds) ? array_keys($bounds) : [];
+            sort($boundKeys);
+            if ($boundKeys !== ['east', 'north', 'south', 'west']) {
+                throw new MarsPlanningException('حدود التضاريس غير صالحة.', 'INVALID_TERRAIN');
+            }
+            foreach (['west', 'south', 'east', 'north'] as $bound) {
+                self::assertFiniteNumber($bounds[$bound] ?? null, $key);
+            }
+            if ((float) $bounds['west'] >= (float) $bounds['east'] || (float) $bounds['south'] >= (float) $bounds['north']) {
+                throw new MarsPlanningException('حدود التضاريس غير صالحة.', 'INVALID_TERRAIN');
+            }
+        }
+        if (!is_array($metadata['warnings'] ?? null) || !is_array($metadata['thresholds'] ?? null)) {
+            throw new MarsPlanningException('وصف التضاريس غير مكتمل.', 'INVALID_TERRAIN');
+        }
+    }
+
+    public static function assertFiniteNumber(mixed $value, string $label): void
+    {
+        if (!(is_int($value) || is_float($value)) || !is_finite((float) $value) || is_bool($value)) {
+            throw new MarsPlanningException('قيمة '.$label.' غير صالحة.', 'INVALID_TERRAIN');
+        }
+    }
+
+    private static function radians(float $degrees): float
+    {
+        return $degrees * M_PI / 180.0;
+    }
+}
+
+
+==================== FILE: ./laravel/app/Services/RouteBriefing.php ====================
+<?php
+
+namespace App\Services;
+
+use RuntimeException;
+
+/**
+ * Turns a planned route into a mission briefing: terrain stats, EVA time,
+ * nearby science points and an explainable GO / CAUTION / NO-GO verdict.
+ *
+ * Framework-free on purpose (arrays in, arrays out) so it can be unit-tested
+ * without booting Laravel. Every threshold is a PLANNING ASSUMPTION, not a
+ * NASA operational limit; they are overridable through config('mars.briefing').
+ */
+final class RouteBriefing
+{
+    private const MARS_RADIUS_M = 3396190.0;
+
+    private const DEFAULTS = [
+        'walk_speed_kmh' => 2.0,          // assumed suited walking speed
+        'eva_budget_hours' => 8.0,        // assumed EVA duration budget
+        'eva_tight_share' => 0.7,         // round trip above this share of budget => CAUTION
+        'poi_radius_m' => 2000.0,         // science points within this distance of the path
+        'slope_caution_deg' => 10.0,
+        'slope_nogo_deg' => 20.0,
+        'high_cost_share_caution' => 0.25, // share of cost>=4 cells => CAUTION
+        'max_pois' => 10,
+    ];
+
+    private array $opt;
+
+    /** @param list<list<float>> $elevations [y][x] metres, same grid as terrain.json */
+    public function __construct(private readonly array $elevations, array $options = [])
+    {
+        $this->opt = array_replace(self::DEFAULTS, $options);
+    }
+
+    public static function fromFile(string $file, array $options = []): self
+    {
+        $text = is_file($file) && is_readable($file) ? file_get_contents($file) : false;
+        $data = $text === false ? null : json_decode($text, true);
+        if (!is_array($data) || !isset($data['elevations']) || !is_array($data['elevations'])) {
+            throw new RuntimeException('Elevation file missing or invalid: '.$file);
+        }
+        return new self($data['elevations'], $options);
+    }
+
+    /**
+     * Adds ['briefing'] to every path (and 'verdict' to its GeoJSON properties).
+     * Only touches successful results; returns everything else unchanged.
+     *
+     * @param list<array{lon:float,lat:float,id?:string,name?:string,type?:string}> $pois
+     */
+    public function attach(array $result, array $grid, float $cellSize, array $pois, ?array $radiation): array
+    {
+        if (($result['status'] ?? '') !== 'success' || empty($result['paths'])) {
+            return $result;
+        }
+        foreach ($result['paths'] as $i => $route) {
+            $briefing = $this->build(
+                $route['path'] ?? [],
+                $route['geographic_path'] ?? [],
+                $grid,
+                $cellSize,
+                (float) ($route['distance_meters'] ?? 0),
+                $pois,
+                $radiation,
+            );
+            $result['paths'][$i]['briefing'] = $briefing;
+            if (isset($result['paths'][$i]['geojson']['properties'])) {
+                $result['paths'][$i]['geojson']['properties']['verdict'] = $briefing['verdict'];
+            }
+            if (isset($result['geojson']['features'][$i]['properties'])) {
+                $result['geojson']['features'][$i]['properties']['verdict'] = $briefing['verdict'];
+            }
+        }
+        $result['verdict'] = $result['paths'][0]['briefing']['verdict'];
+        return $result;
+    }
+
+    public function build(
+        array $path,
+        array $geoPath,
+        array $grid,
+        float $cellSize,
+        float $distanceMeters,
+        array $pois,
+        ?array $radiation,
+    ): array {
+        $slopes = [];
+        $ascent = 0.0;
+        $descent = 0.0;
+        $classes = [1 => 0, 2 => 0, 4 => 0, 8 => 0];
+        $minElev = INF;
+        $maxElev = -INF;
+
+        foreach ($path as $i => $p) {
+            $z = (float) ($this->elevations[$p['y']][$p['x']] ?? NAN);
+            if (is_finite($z)) {
+                $minElev = min($minElev, $z);
+                $maxElev = max($maxElev, $z);
+            }
+            if ($i === 0) {
+                continue; // entering a cell pays its cost; the start cell is free
+            }
+            $cost = $grid[$p['y']][$p['x']] ?? null;
+            if (isset($classes[$cost])) {
+                $classes[$cost]++;
+            }
+            $prev = $path[$i - 1];
+            $zPrev = (float) ($this->elevations[$prev['y']][$prev['x']] ?? NAN);
+            if (!is_finite($z) || !is_finite($zPrev)) {
+                continue;
+            }
+            $dz = $z - $zPrev;
+            $run = $cellSize * hypot($p['x'] - $prev['x'], $p['y'] - $prev['y']);
+            $slopes[] = rad2deg(atan(abs($dz) / max($run, 1e-9)));
+            $dz > 0 ? $ascent += $dz : $descent -= $dz;
+        }
+
+        $steps = max(count($path) - 1, 0);
+        sort($slopes);
+        $p95 = $slopes === [] ? 0.0 : $slopes[(int) max(ceil(0.95 * count($slopes)) - 1, 0)];
+        $highShare = $steps > 0 ? ($classes[4] + $classes[8]) / $steps : 0.0;
+
+        $oneWayHours = ($distanceMeters / 1000.0) / $this->opt['walk_speed_kmh'];
+        $roundTripHours = 2.0 * $oneWayHours;
+        $stops = $this->sciencePoints($geoPath, $pois);
+        $radiationStatus = (string) ($radiation['radiation_status'] ?? 'UNKNOWN');
+
+        [$verdict, $reasons] = $this->verdict(
+            $roundTripHours,
+            $slopes === [] ? 0.0 : max($slopes),
+            $highShare,
+            $radiationStatus,
+        );
+
+        return [
+            'verdict' => $verdict,
+            'reasons' => $reasons,
+            'terrain' => [
+                'distance_m' => $distanceMeters,
+                'steps' => $steps,
+                'max_slope_deg' => round($slopes === [] ? 0.0 : max($slopes), 2),
+                'mean_slope_deg' => round($slopes === [] ? 0.0 : array_sum($slopes) / count($slopes), 2),
+                'p95_slope_deg' => round($p95, 2),
+                'ascent_m' => round($ascent, 1),
+                'descent_m' => round($descent, 1),
+                'elevation_min_m' => is_finite($minElev) ? round($minElev, 1) : null,
+                'elevation_max_m' => is_finite($maxElev) ? round($maxElev, 1) : null,
+                'cost_cells' => $classes,
+                'high_cost_share' => round($highShare, 3),
+            ],
+            'eva' => [
+                'one_way_hours' => round($oneWayHours, 2),
+                'round_trip_hours' => round($roundTripHours, 2),
+                'budget_hours' => $this->opt['eva_budget_hours'],
+                'walk_speed_kmh' => $this->opt['walk_speed_kmh'],
+                'basis' => 'planning_assumption',
+            ],
+            'radiation' => [
+                'status' => $radiationStatus,
+                'basis' => $radiation['basis'] ?? null,
+            ],
+            'science_stops' => $stops,
+            'limitations' => [
+                'Slope is measured between 200 m cell centres; local slopes are steeper.',
+                'Radiation status is an Earth-view solar-flare proxy, not a Mars surface measurement.',
+                'Speeds, EVA budget and thresholds are planning assumptions, not NASA operational limits.',
+            ],
+        ];
+    }
+
+    /** @return array{0:string,1:list<array{code:string,severity:string,detail:string}>} */
+    private function verdict(float $roundTripHours, float $maxSlope, float $highShare, string $radiation): array
+    {
+        $level = 0;
+        $reasons = [];
+        $add = function (int $sev, string $code, string $detail) use (&$level, &$reasons): void {
+            $level = max($level, $sev);
+            $reasons[] = ['code' => $code, 'severity' => $sev === 2 ? 'NO-GO' : 'CAUTION', 'detail' => $detail];
+        };
+
+        $budget = (float) $this->opt['eva_budget_hours'];
+        if ($roundTripHours > $budget) {
+            $add(2, 'EVA_TIME_EXCEEDED', sprintf('Round trip ~%.1f h exceeds the %.1f h EVA budget.', $roundTripHours, $budget));
+        } elseif ($roundTripHours > $budget * $this->opt['eva_tight_share']) {
+            $add(1, 'EVA_TIME_TIGHT', sprintf('Round trip ~%.1f h uses most of the %.1f h EVA budget.', $roundTripHours, $budget));
+        }
+        if ($maxSlope >= $this->opt['slope_nogo_deg']) {
+            $add(2, 'SLOPE_LIMIT', sprintf('Max slope %.1f° reaches the %.0f° limit.', $maxSlope, $this->opt['slope_nogo_deg']));
+        } elseif ($maxSlope >= $this->opt['slope_caution_deg']) {
+            $add(1, 'STEEP_SECTION', sprintf('Max slope %.1f° on at least one step.', $maxSlope));
+        }
+        if ($highShare > $this->opt['high_cost_share_caution']) {
+            $add(1, 'HIGH_COST_TERRAIN', sprintf('%.0f%% of the route crosses high-cost terrain.', $highShare * 100));
+        }
+        match ($radiation) {
+            'HIGH_RADIATION_WARNING' => $add(2, 'RADIATION_HIGH', 'Strong recent solar flare activity.'),
+            'ELEVATED' => $add(1, 'RADIATION_ELEVATED', 'Moderate recent solar flare activity.'),
+            'NOMINAL' => null,
+            default => $add(1, 'RADIATION_UNKNOWN', 'Space-weather data unavailable; treat as unverified.'),
+        };
+
+        return [['GO', 'CAUTION', 'NO-GO'][$level], $reasons];
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function sciencePoints(array $geoPath, array $pois): array
+    {
+        if ($geoPath === []) {
+            return [];
+        }
+        $out = [];
+        foreach ($pois as $poi) {
+            if (!isset($poi['lon'], $poi['lat'])) {
+                continue;
+            }
+            $cosLat = cos(deg2rad((float) $poi['lat']));
+            $best = INF;
+            $bestIdx = 0;
+            foreach ($geoPath as $i => $g) {
+                $dx = deg2rad($g['lon'] - $poi['lon']) * $cosLat * self::MARS_RADIUS_M;
+                $dy = deg2rad($g['lat'] - $poi['lat']) * self::MARS_RADIUS_M;
+                $d2 = $dx * $dx + $dy * $dy;
+                if ($d2 < $best) {
+                    $best = $d2;
+                    $bestIdx = $i;
+                }
+            }
+            $dist = sqrt($best);
+            if ($dist <= $this->opt['poi_radius_m']) {
+                $out[] = [
+                    'id' => $poi['id'] ?? null,
+                    'name' => $poi['name'] ?? null,
+                    'type' => $poi['type'] ?? null,
+                    'distance_to_path_m' => round($dist),
+                    'nearest_path_index' => $bestIdx,
+                ];
+            }
+        }
+        usort($out, static fn (array $a, array $b): int => $a['distance_to_path_m'] <=> $b['distance_to_path_m']);
+        return array_slice($out, 0, (int) $this->opt['max_pois']);
+    }
+}
+
+
+==================== FILE: ./laravel/app/Services/MarsPathfinder.php ====================
+<?php
+
+namespace App\Services;
+
+use App\Exceptions\MarsPlanningException;
+use Illuminate\Contracts\Config\Repository;
+use JsonException;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
+
+final class MarsPathfinder
+{
+    public function __construct(
+        private readonly Repository $config,
+        private readonly MarsTerrainMap $terrain,
+    ) {}
+
+    public function run(array $map, array $start, array $target, ?array $requestedStart = null, ?array $requestedTarget = null): array
+    {
+        $this->terrain->assertUsablePoint($map, $start, 'البداية');
+        $this->terrain->assertUsablePoint($map, $target, 'النهاية');
+        $requestedStart ??= $start;
+        $requestedTarget ??= $target;
+        $binary = $this->config->get('mars.binary');
+        if (!is_string($binary) || !is_file($binary) || !is_executable($binary)) {
+            throw new MarsPlanningException('برنامج C++ غير جاهز على السيرفر.', 'BINARY_UNAVAILABLE');
+        }
+        $directory = (string) $this->config->get('mars.temporary_directory');
+        if ($directory === '' || (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory))) {
+            throw new MarsPlanningException('مجلد المعالجة غير متاح.', 'TEMP_UNAVAILABLE');
+        }
+        $lock = fopen($directory.'/'.hash('sha256', $map['map_id']).'.lock', 'c');
+        if ($lock === false) {
+            throw new MarsPlanningException('تعذر تجهيز المعالجة.', 'LOCK_UNAVAILABLE');
+        }
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
+            throw new MarsPlanningException('هناك طلب قيد المعالجة؛ حاول بعد قليل.', 'PLANNER_BUSY', 429);
+        }
+        $temporaryFile = null;
+        try {
+            $temporaryFile = tempnam($directory, 'route_');
+            if ($temporaryFile === false || realpath(dirname($temporaryFile)) !== realpath($directory)) {
+                throw new MarsPlanningException('تعذر إنشاء ملف الطلب.', 'TEMP_UNAVAILABLE');
+            }
+            chmod($temporaryFile, 0600);
+            $payload = [
+                'width' => $map['width'], 'height' => $map['height'],
+                'start' => $start, 'target' => $target, 'grid' => $map['grid'],
+            ];
+            $json = json_encode($payload, JSON_THROW_ON_ERROR);
+            if (file_put_contents($temporaryFile, $json) !== strlen($json)) {
+                throw new MarsPlanningException('تعذر كتابة ملف الطلب.', 'TEMP_WRITE_FAILED');
+            }
+            $process = new Process([$binary, $temporaryFile], dirname($binary));
+            $process->setTimeout(max(1, min(300, (int) $this->config->get('mars.timeout_seconds', 120))));
+            try {
+                $process->run();
+            } catch (ProcessTimedOutException $exception) {
+                throw new MarsPlanningException('انتهت مهلة الحساب؛ لا توجد نتيجة مكتملة.', 'PLANNER_TIMEOUT', 504);
+            }
+            $stdout = $process->getOutput();
+            if (strlen($stdout) > 16 * 1024 * 1024) {
+                throw new MarsPlanningException('نتيجة المسار أكبر من الحد المدعوم.', 'RESULT_TOO_LARGE', 502);
+            }
+            try {
+                $result = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException $exception) {
+                throw new MarsPlanningException('برنامج المسارات لم يرجع JSON صالحًا.', 'INVALID_PLANNER_OUTPUT', 502);
+            }
+            if (!$process->isSuccessful() || !is_array($result)) {
+                throw new MarsPlanningException('تعذر إكمال برنامج المسارات.', 'PLANNER_FAILED', 502);
+            }
+            if (($result['status'] ?? null) === 'error' && ($result['error_code'] ?? null) === 'NO_PATH') {
+                return $this->decorateNoPath($map, $start, $target, $requestedStart, $requestedTarget);
+            }
+            $result = $this->validateResult($result, $map, $start, $target);
+            $result['map_id'] = $map['map_id'];
+            $result['map_version'] = $map['version'];
+            $result['start'] = $start;
+            $result['target'] = $target;
+            return $this->decorateResult($result, $map, $start, $target, $requestedStart, $requestedTarget);
+        } finally {
+            if (is_string($temporaryFile) && is_file($temporaryFile)) {
+                unlink($temporaryFile);
+            }
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private function decorateNoPath(array $map, array $start, array $target, array $requestedStart, array $requestedTarget): array
+    {
+        return $this->decorateResult([
+            'status' => 'error', 'error_code' => 'NO_PATH',
+            'message' => 'لا يوجد طريق بين النقطتين وفق شبكة التضاريس الحالية.',
+            'path' => [], 'paths' => [],
+            'map_id' => $map['map_id'], 'map_version' => $map['version'],
+            'start' => $start, 'target' => $target,
+        ], $map, $start, $target, $requestedStart, $requestedTarget);
+    }
+
+    private function decorateResult(array $result, array $map, array $start, array $target, array $requestedStart, array $requestedTarget): array
+    {
+        $result['requested_start'] = $requestedStart;
+        $result['requested_target'] = $requestedTarget;
+        $result['start_geographic'] = $this->terrain->cellCenter($map, $start);
+        $result['target_geographic'] = $this->terrain->cellCenter($map, $target);
+        $result['terrain_metadata'] = $this->terrain->resultMetadata($map);
+        $features = [];
+        foreach ($result['paths'] as $index => &$route) {
+            $geographicPath = [];
+            foreach ($route['path'] as $point) {
+                $center = $this->terrain->cellCenter($map, $point);
+                $geographicPath[] = ['lon' => $center['lon'], 'lat' => $center['lat']];
+            }
+            $route['geographic_path'] = $geographicPath;
+            $coordinates = array_map(static fn (array $point): array => [$point['lon'], $point['lat']], $geographicPath);
+            $geometry = count($coordinates) >= 2
+                ? ['type' => 'LineString', 'coordinates' => $coordinates]
+                : ['type' => 'Point', 'coordinates' => $coordinates[0] ?? [null, null]];
+            $feature = [
+                'type' => 'Feature',
+                'properties' => [
+                    'rank' => $route['rank'] ?? $index + 1,
+                    'cost' => $route['cost'] ?? null,
+                    'steps' => $route['steps'] ?? null,
+                    'distance_meters' => $route['distance_meters'] ?? null,
+                ],
+                'geometry' => $geometry,
+            ];
+            $route['geojson'] = $feature;
+            $features[] = $feature;
+        }
+        unset($route);
+        $result['geojson'] = ['type' => 'FeatureCollection', 'features' => $features];
+        return $result;
+    }
+
+    private function validateResult(array $result, array $map, array $start, array $target): array
+    {
+        $paths = $result['paths'] ?? null;
+        if (($result['status'] ?? null) !== 'success' || !is_array($paths) || !array_is_list($paths) || count($paths) < 1 || count($paths) > 3) {
+            throw new MarsPlanningException('صيغة نتيجة المسارات غير صحيحة.', 'INVALID_PLANNER_OUTPUT', 502);
+        }
+        $previousCost = -INF;
+        $seenRoutes = [];
+        foreach ($paths as $index => &$route) {
+            $points = $route['path'] ?? null;
+            $cost = $route['cost'] ?? null;
+            if (!is_array($points) || !array_is_list($points) || count($points) < 1 || count($points) > $map['width'] * $map['height'] ||
+                !(is_int($cost) || is_float($cost)) || !is_finite((float) $cost) || $cost < 0 || $cost < $previousCost ||
+                $points[0] !== $start || $points[count($points) - 1] !== $target) {
+                throw new MarsPlanningException('المسار لا يطابق نقاط الطلب.', 'INVALID_PLANNER_OUTPUT', 502);
+            }
+            $seen = [];
+            $calculatedCost = 0.0;
+            foreach ($points as $i => $point) {
+                if (!is_array($point)) {
+                    throw new MarsPlanningException('إحداثيات المسار غير صالحة.', 'INVALID_PLANNER_OUTPUT', 502);
+                }
+                $x = $point['x'] ?? null;
+                $y = $point['y'] ?? null;
+                if (!is_int($x) || !is_int($y) || $x < 0 || $x >= $map['width'] || $y < 0 || $y >= $map['height'] || $map['grid'][$y][$x] < 0) {
+                    throw new MarsPlanningException('المسار يدخل خلية غير صالحة.', 'INVALID_PLANNER_OUTPUT', 502);
+                }
+                $id = $y * $map['width'] + $x;
+                if (isset($seen[$id])) {
+                    throw new MarsPlanningException('المسار يكرر خلية.', 'INVALID_PLANNER_OUTPUT', 502);
+                }
+                $seen[$id] = true;
+                if ($i > 0) {
+                    $before = $points[$i - 1];
+                    if (abs($before['x'] - $x) + abs($before['y'] - $y) !== 1) {
+                        throw new MarsPlanningException('المسار يحتوي قفزة غير مسموحة.', 'INVALID_PLANNER_OUTPUT', 502);
+                    }
+                    $calculatedCost += $map['grid'][$y][$x];
+                }
+            }
+            if (abs($calculatedCost - $cost) > 1e-8 * max(1.0, abs($calculatedCost))) {
+                throw new MarsPlanningException('تكلفة المسار لا تطابق الشبكة.', 'INVALID_PLANNER_OUTPUT', 502);
+            }
+            $hash = hash('sha256', json_encode($points, JSON_THROW_ON_ERROR));
+            if (isset($seenRoutes[$hash])) {
+                throw new MarsPlanningException('برنامج المسارات كرر نفس المسار.', 'INVALID_PLANNER_OUTPUT', 502);
+            }
+            $seenRoutes[$hash] = true;
+            $route['rank'] = $index + 1;
+            $route['steps'] = count($points) - 1;
+            $route['distance_meters'] = $route['steps'] * $map['cell_size_meters'];
+            $previousCost = $cost;
+        }
+        unset($route);
+        $result['paths'] = $paths;
+        $result['path'] = $paths[0]['path'];
+        return $result;
+    }
+}
+
+
+==================== FILE: ./laravel/app/Http/Controllers/MarsRouteController.php ====================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Exceptions\MarsPlanningException;
+use App\Models\MarsRouteRequest;
+use App\Models\SciencePoi;
+use App\Services\MarsPathfinder;
+use App\Services\MarsTerrainMap;
+use App\Services\RouteBriefing;
+use App\Services\SpaceWeather;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Throwable;
+
+final class MarsRouteController extends Controller
+{
+    public function terrain(string $mapId, MarsTerrainMap $terrain): JsonResponse
+    {
+        try {
+            $map = $terrain->load($mapId);
+            return response()->json($terrain->publicPayload($map))->header('Cache-Control', 'private, no-cache');
+        } catch (MarsPlanningException $exception) {
+            return $this->errorResponse($exception);
+        }
+    }
+
+    public function store(Request $request, MarsTerrainMap $terrain, MarsPathfinder $planner, SpaceWeather $weather): JsonResponse
+    {
+        $request->validate([
+            'map_id' => ['required', 'string', Rule::in(array_keys(config('mars.maps', [])))],
+        ]);
+        $record = null;
+        try {
+            $map = $terrain->load($request->string('map_id')->toString());
+            $data = $request->validate([
+                'map_id' => ['required', 'string'],
+                'map_version' => ['required', 'string', 'size:64', 'regex:/^[a-f0-9]{64}$/'],
+                'start' => ['required', 'array'],
+                'target' => ['required', 'array'],
+                'grid' => ['prohibited'], 'width' => ['prohibited'], 'height' => ['prohibited'],
+            ]);
+            if (!hash_equals($map['version'], $data['map_version'])) {
+                throw new MarsPlanningException('الخريطة تغيرت؛ أعد تحميلها قبل اختيار المسار.', 'MAP_CHANGED', 409);
+            }
+
+            $startInput = $this->normalizeInputCoordinate($data['start'], $map, $terrain, 'start');
+            $targetInput = $this->normalizeInputCoordinate($data['target'], $map, $terrain, 'target');
+            if ($startInput['kind'] !== $targetInput['kind']) {
+                $this->invalidCoordinate('start', 'يجب استخدام نفس نوع الإحداثيات للبداية والنهاية.');
+            }
+            $start = $startInput['cell'];
+            $target = $targetInput['cell'];
+            $terrain->assertUsablePoint($map, $start, 'البداية');
+            $terrain->assertUsablePoint($map, $target, 'النهاية');
+
+            // Persist the validated user-selected coordinates BEFORE C++ starts.
+            $inputCoordinates = ['start' => $startInput['requested'], 'target' => $targetInput['requested']];
+            $record = MarsRouteRequest::create([
+                'id' => (string) Str::uuid(),
+                'session_hash' => $this->sessionHash($request),
+                'map_id' => $map['map_id'], 'map_version' => $map['version'],
+                'start_x' => $start['x'], 'start_y' => $start['y'],
+                'target_x' => $target['x'], 'target_y' => $target['y'],
+                'input_coordinates' => $inputCoordinates,
+                'status' => 'processing', 'result' => null,
+            ]);
+            $result = $planner->run($map, $start, $target, $startInput['requested'], $targetInput['requested']);
+            $result = $this->withBriefing($result, $map, $weather);
+            $result['request_id'] = $record->id;
+            $record->update([
+                'status' => $result['status'] === 'success' ? 'success' : 'no_path',
+                'result' => $result,
+            ]);
+            return response()->json($result);
+        } catch (MarsPlanningException $exception) {
+            $body = [
+                'status' => 'error', 'error_code' => $exception->errorCode,
+                'message' => $exception->getMessage(), 'paths' => [], 'path' => [],
+            ];
+            if ($record !== null) {
+                $body['request_id'] = $record->id;
+                $record->update(['status' => 'failed', 'result' => $body]);
+            }
+            $response = response()->json($body, $exception->httpStatus);
+            if ($exception->httpStatus === 429) {
+                $response->header('Retry-After', '5');
+            }
+            return $response;
+        } catch (Throwable $exception) {
+            if ($exception instanceof ValidationException) {
+                throw $exception;
+            }
+            report($exception);
+            $body = ['status' => 'error', 'error_code' => 'SERVER_ERROR',
+                     'message' => 'تعذر معالجة الطلب على السيرفر.', 'paths' => [], 'path' => []];
+            if ($record !== null) {
+                $body['request_id'] = $record->id;
+                $record->update(['status' => 'failed', 'result' => $body]);
+            }
+            return response()->json($body, 500);
+        }
+    }
+
+    public function show(Request $request, string $id): JsonResponse
+    {
+        $record = MarsRouteRequest::query()->whereKey($id)
+            ->where('session_hash', $this->sessionHash($request))->firstOrFail();
+        return response()->json([
+            'request_id' => $record->id,
+            'processing_status' => $record->status,
+            'map_id' => $record->map_id,
+            'start' => ['x' => $record->start_x, 'y' => $record->start_y],
+            'target' => ['x' => $record->target_x, 'y' => $record->target_y],
+            'input_coordinates' => $record->input_coordinates,
+            'result' => $record->result,
+        ]);
+    }
+
+    /**
+     * Adds the mission briefing (terrain stats, EVA time, nearby science points, GO/CAUTION/NO-GO).
+     * A briefing failure must never break the route itself.
+     */
+    private function withBriefing(array $result, array $map, SpaceWeather $weather): array
+    {
+        try {
+            $settings = config('mars.maps.'.$map['map_id']);
+            $service = RouteBriefing::fromFile($settings['elevations_file'], config('mars.briefing', []));
+            try {
+                $b = $settings['bounds'];
+                $pois = SciencePoi::query()
+                    ->whereBetween('lon', [$b['west'], $b['east']])
+                    ->whereBetween('lat', [$b['south'], $b['north']])
+                    ->get(['poi_code as id', 'name', 'type', 'lat', 'lon'])
+                    ->map(fn ($poi): array => $poi->toArray())
+                    ->all();
+            } catch (Throwable $e) {
+                report($e); // e.g. science_pois not migrated yet: briefing still works without POIs
+                $pois = [];
+            }
+            return $service->attach($result, $map['grid'], (float) $map['cell_size_meters'], $pois, $weather->current());
+        } catch (Throwable $e) {
+            report($e);
+            $result['briefing_error'] = 'Briefing unavailable; the route itself is unaffected.';
+            return $result;
+        }
+    }
+
+    /** @return array{kind:string,requested:array,cell:array{x:int,y:int}} */
+    private function normalizeInputCoordinate(mixed $value, array $map, MarsTerrainMap $terrain, string $field): array
+    {
+        if (!is_array($value)) {
+            $this->invalidCoordinate($field, 'الإحداثيات يجب أن تكون كائنًا.');
+        }
+        $keys = array_keys($value);
+        sort($keys);
+        if ($keys === ['x', 'y']) {
+            if (!is_int($value['x'] ?? null) || !is_int($value['y'] ?? null)) {
+                $this->invalidCoordinate($field, 'إحداثيات الشبكة يجب أن تكون أعدادًا صحيحة.');
+            }
+            $cell = ['x' => $value['x'], 'y' => $value['y']];
+            if ($cell['x'] < 0 || $cell['x'] >= $map['width'] || $cell['y'] < 0 || $cell['y'] >= $map['height']) {
+                $this->invalidCoordinate($field, 'إحداثيات الشبكة خارج حدود الشبكة.');
+            }
+            return ['kind' => 'grid', 'requested' => $cell, 'cell' => $cell];
+        }
+        if ($keys === ['lat', 'lon']) {
+            foreach (['lon', 'lat'] as $coordinate) {
+                if (!(is_int($value[$coordinate] ?? null) || is_float($value[$coordinate] ?? null)) || !is_finite((float) $value[$coordinate])) {
+                    $this->invalidCoordinate($field, 'الإحداثيات الجغرافية يجب أن تكون أعدادًا حقيقية منتهية.');
+                }
+            }
+            $requested = ['lon' => $value['lon'], 'lat' => $value['lat']];
+            $bounds = $map['requested_bounds'];
+            if ($requested['lon'] < $bounds['west'] || $requested['lon'] > $bounds['east'] ||
+                $requested['lat'] < $bounds['south'] || $requested['lat'] > $bounds['north']) {
+                $this->invalidCoordinate($field, 'الإحداثيات الجغرافية خارج الحدود المطلوبة.');
+            }
+            return ['kind' => 'geographic', 'requested' => $requested, 'cell' => $terrain->coordinateToCell($requested, $map, $field)];
+        }
+        $this->invalidCoordinate($field, 'استخدم بالضبط x,y أو بالضبط lon,lat دون خلط.');
+    }
+
+    private function invalidCoordinate(string $field, string $message): never
+    {
+        throw ValidationException::withMessages([$field => [$message]]);
+    }
+
+    private function sessionHash(Request $request): string
+    {
+        return hash_hmac('sha256', $request->session()->getId(), (string) config('app.key'));
+    }
+
+    private function errorResponse(MarsPlanningException $exception): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error', 'error_code' => $exception->errorCode,
+            'message' => $exception->getMessage(),
+        ], $exception->httpStatus);
+    }
+}
+
+
+==================== FILE: ./laravel/app/Http/Controllers/MarsContextController.php ====================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\SciencePoi;
+use App\Services\SpaceWeather;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Throwable;
+
+/** Read-only context layers around the route planner (map tiles, POIs, imagery, space weather). */
+final class MarsContextController extends Controller
+{
+    public function layers(): JsonResponse
+    {
+        return response()->json(['status' => 'success', 'data' => config('mars.layers', [])]);
+    }
+
+    public function pois(): JsonResponse
+    {
+        $b = config('mars.maps.jezero-regional-200m.bounds');
+        $pois = Cache::remember('mars_pois_in_bounds', now()->addHours(1), fn () => SciencePoi::query()
+            ->whereBetween('lon', [$b['west'], $b['east']])
+            ->whereBetween('lat', [$b['south'], $b['north']])
+            ->get(['poi_code as id', 'name', 'description', 'lat', 'lon', 'type', 'metadata']));
+
+        return response()->json(['status' => 'success', 'count' => $pois->count(), 'data' => $pois]);
+    }
+
+    public function spaceWeather(SpaceWeather $weather): JsonResponse
+    {
+        return response()->json(['status' => 'success', 'data' => $weather->current()]);
+    }
+
+    public function images(): JsonResponse
+    {
+        $images = Cache::get('mars_jezero_images');
+        if (!is_array($images)) {
+            $images = $this->fetchImages();
+            if ($images !== []) {
+                Cache::put('mars_jezero_images', $images, now()->addHours(6)); // never cache a failure
+            }
+        }
+        if ($images === []) {
+            return response()->json(['status' => 'error', 'message' => 'NASA image library unavailable.', 'data' => []], 503);
+        }
+        return response()->json(['status' => 'success', 'data' => $images]);
+    }
+
+    private function fetchImages(): array
+    {
+        try {
+            $response = Http::timeout(10)->get('https://images-api.nasa.gov/search', [
+                'q' => 'Perseverance Jezero Crater surface',
+                'media_type' => 'image',
+                'page' => 1,
+            ]);
+            if (!$response->successful()) {
+                return [];
+            }
+            return collect($response->json()['collection']['items'] ?? [])
+                ->take(8)
+                ->map(fn (array $item): array => [
+                    'id' => $item['data'][0]['nasa_id'] ?? null,
+                    'title' => $item['data'][0]['title'] ?? 'Jezero Crater',
+                    'img_src' => $item['links'][0]['href'] ?? '',
+                    'date' => substr($item['data'][0]['date_created'] ?? '', 0, 10),
+                    'source' => 'NASA Image and Video Library',
+                ])
+                ->filter(fn (array $img): bool => $img['img_src'] !== '')
+                ->values()
+                ->all();
+        } catch (Throwable) {
+            return [];
+        }
+    }
+}
+
+
+==================== FILE: ./laravel/app/Console/Commands/MarsCheckLayers.php ====================
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Http;
+use Throwable;
+
+class MarsCheckLayers extends Command
+{
+    protected $signature = 'mars:check-layers';
+    protected $description = 'Request tile 0/0/0 of every configured map layer and report the HTTP status';
+
+    public function handle(): int
+    {
+        $bad = 0;
+        foreach (config('mars.layers', []) as $id => $layer) {
+            $url = str_replace(['{z}', '{y}', '{x}'], '0', $layer['url']);
+            try {
+                $status = Http::timeout(15)->get($url)->status();
+            } catch (Throwable $e) {
+                $status = 'ERR';
+            }
+            $ok = $status === 200;
+            $bad += $ok ? 0 : 1;
+            $this->line(sprintf('%s %-22s HTTP %s', $ok ? 'OK  ' : 'FAIL', $id, $status));
+        }
+        return $bad === 0 ? self::SUCCESS : self::FAILURE;
+    }
+}
+
+
+==================== FILE: ./laravel/routes/mars.php ====================
+<?php
+
+use App\Http\Controllers\MarsContextController;
+use App\Http\Controllers\MarsRouteController;
+use Illuminate\Support\Facades\Route;
+
+// Include this file FROM routes/web.php, so session + CSRF middleware remain enabled.
+// For your public production app, also apply your existing authentication policy.
+Route::prefix('mars')->name('mars.')->group(function (): void {
+    // Route planning (terrain, planner, saved requests)
+    Route::get('/terrain/{mapId}', [MarsRouteController::class, 'terrain'])->name('terrain');
+    Route::post('/routes', [MarsRouteController::class, 'store'])->middleware('throttle:5,1')->name('routes.store');
+    Route::get('/routes/{id}', [MarsRouteController::class, 'show'])->whereUuid('id')->name('routes.show');
+
+    // Context layers (read-only)
+    Route::middleware('throttle:60,1')->group(function (): void {
+        Route::get('/layers', [MarsContextController::class, 'layers'])->name('layers');
+        Route::get('/science/pois', [MarsContextController::class, 'pois'])->name('pois');
+        Route::get('/space-weather', [MarsContextController::class, 'spaceWeather'])->name('space-weather');
+        Route::get('/images', [MarsContextController::class, 'images'])->name('images');
+    });
+});
+
+
+==================== FILE: ./python/build_regional_terrain.py ====================
+#!/usr/bin/env python3
+"""Real USGS elevations -> whole Trek viewport, regional 200 m planning only."""
+import argparse
+import json
+import math
+from pathlib import Path
+import sys
+from urllib.parse import parse_qs, urlparse
+
+import numpy as np
+from pyproj import CRS, Transformer
+import rasterio
+from rasterio.enums import Resampling
+from rasterio.transform import from_origin
+from rasterio.warp import reproject, transform_bounds
+from rasterio.windows import Window, from_bounds
+from scipy.ndimage import binary_dilation, uniform_filter
+
+SOURCE_URL = 'https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif'
+REFERENCE = 'https://astrogeology.usgs.gov/search/map/mars_mgs_mola_mex_hrsc_blended_dem_global_200m'
+DEFAULT_TREK_URL = 'https://trek.nasa.gov/mars/#v=0.1&x=77.42982155&y=18.46611095&z=9&p=urn%3Aogc%3Adef%3Acrs%3AEPSG%3A%3A104905&d=&locale=&b=mars&e=76.80291421306124%2C17.96348644765699%2C78.05672888693876%2C18.96873545234301&sfz=&w='
+RADIUS = 3396190.0
+
+
+def log(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+def parse_extent(url):
+    parsed = urlparse(url)
+    if parsed.hostname != 'trek.nasa.gov' or not parsed.path.startswith('/mars/'):
+        raise ValueError('الرابط يجب أن يكون Mars Trek الرسمي.')
+    params = parse_qs(parsed.fragment)
+    try:
+        west, south, east, north = map(float, params['e'][0].split(','))
+    except (KeyError, ValueError, IndexError):
+        raise ValueError('الرابط لا يحتوي حدود e صالحة.')
+    if not all(map(math.isfinite, [west, south, east, north])) or not (-180 <= west < east <= 180 and -90 < south < north < 90):
+        raise ValueError('نطاق غير صالح أو يعبر خط تغيير longitude؛ هذه النسخة لا تدعم عبوره.')
+    return {'west': west, 'south': south, 'east': east, 'north': north}
+
+
+def bands(array, limits):
+    out = np.ones(array.shape, dtype=np.int16)
+    for threshold, cost in zip(limits, (2, 4, 8)):
+        out[array >= threshold] = cost
+    return out
+
+
+def run(args):
+    if not math.isfinite(args.cell_m) or args.cell_m < 200:
+        raise ValueError('المصدر اسميًا 200 م؛ هذه النسخة تمنع إخراج شبكة أدق زائفة.')
+    if not (10 < args.block_slope_deg < 90) or not math.isfinite(args.block_localdev_m) or args.block_localdev_m <= 60:
+        raise ValueError('حدود النموذج يجب أن تتجاوز آخر درجات التكلفة: الميل >10، والانحراف المحلي >60 م.')
+    extent = parse_extent(args.trek_url)
+    center_lon = (extent['west'] + extent['east']) / 2
+    center_lat = (extent['south'] + extent['north']) / 2
+    geographic = CRS.from_proj4(f'+proj=longlat +R={RADIUS} +no_defs')
+    metric = CRS.from_proj4(f'+proj=eqc +lat_ts={center_lat} +lon_0={center_lon} +lat_0={center_lat} +R={RADIUS} +units=m +no_defs')
+    project = Transformer.from_crs(geographic, metric, always_xy=True)
+    inverse = Transformer.from_crs(metric, geographic, always_xy=True)
+    xmin, ymin = project.transform(extent['west'], extent['south'])
+    xmax, ymax = project.transform(extent['east'], extent['north'])
+    width, height = math.ceil((xmax - xmin) / args.cell_m), math.ceil((ymax - ymin) / args.cell_m)
+    if width * height > 1_000_000:
+        raise ValueError('شبكة أكبر من مليون خلية؛ زِد حجم خلية التخطيط بدل رفع الحد بلا تصميم جديد.')
+    # Symmetric sub-cell padding: all cell centers remain inside requested bounds.
+    xpad = (width * args.cell_m - (xmax - xmin)) / 2
+    ypad = (height * args.cell_m - (ymax - ymin)) / 2
+    left, top = xmin - xpad, ymax + ypad
+    transform = from_origin(left, top, args.cell_m, args.cell_m)
+    halo = 4  # Mean radius2 + slope radius1 + blocked buffer1; no artificial map border.
+    halo_transform = from_origin(left - halo * args.cell_m, top + halo * args.cell_m, args.cell_m, args.cell_m)
+    hw, hh = width + 2 * halo, height + 2 * halo
+    halo_bounds = (halo_transform.c, halo_transform.f - hh * args.cell_m,
+                   halo_transform.c + hw * args.cell_m, halo_transform.f)
+    args.out.mkdir(parents=True, exist_ok=True)
+    cache = args.out / 'native_source_window.tif'
+    cache_metadata_file = args.out / 'native_source_window_metadata.json'
+    cache_key = {'source': args.source, 'extent': extent, 'cellSizeMeters': args.cell_m}
+    cache_metadata = json.loads(cache_metadata_file.read_text()) if cache_metadata_file.exists() else None
+    use_cache = (cache.exists() and not args.refresh and isinstance(cache_metadata, dict)
+                 and cache_metadata.get('key') == cache_key)
+    source = str(cache) if use_cache else args.source
+    log(f'النطاق كاملًا: {width} × {height}، خلية {args.cell_m} م؛ مساحة نحو {(xmax-xmin)/1000:.2f} × {(ymax-ymin)/1000:.2f} كم.')
+    env = dict(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', CPL_VSIL_CURL_ALLOWED_EXTENSIONS='.tif,.tiff',
+               GDAL_HTTP_TIMEOUT='90', GDAL_HTTP_CONNECTTIMEOUT='30', GDAL_HTTP_MAX_RETRY='3',
+               GDAL_HTTP_RETRY_DELAY='2', GDAL_CACHEMAX=128,
+               CPL_VSIL_CURL_CHUNK_SIZE='1048576', CPL_VSIL_CURL_CACHE_SIZE='134217728')
+    with rasterio.Env(**env):
+        with rasterio.open(source) as src:
+            if src.count != 1 or src.crs is None:
+                raise ValueError('المصدر يجب أن يكون DEM أحادي الطبقة وله مرجع إحداثيات.')
+            radius = CRS.from_wkt(src.crs.to_wkt()).ellipsoid.semi_major_metre
+            if not math.isclose(radius, RADIUS, abs_tol=1):
+                raise ValueError('المصدر ليس مرجع المريخ؛ لن نستخدم EPSG:4326 الخاص بالأرض.')
+            sb = transform_bounds(metric.to_wkt(), src.crs, *halo_bounds, densify_pts=21)
+            floating = from_bounds(*sb, transform=src.transform)
+            x0, y0 = max(0, math.floor(floating.col_off)-3), max(0, math.floor(floating.row_off)-3)
+            x1 = min(src.width, math.ceil(floating.col_off+floating.width)+3)
+            y1 = min(src.height, math.ceil(floating.row_off+floating.height)+3)
+            if x1 <= x0 or y1 <= y0:
+                raise ValueError('النطاق خارج المصدر.')
+            values = np.full((y1-y0, x1-x0), np.nan, dtype=np.float32)
+            log(f'قراءة نافذة الارتفاع {x1-x0} × {y1-y0} فقط. قد تُنقل شرائح أكبر من القص بسبب تخطيط GeoTIFF.')
+            for row in range(y0, y1, 16):
+                count = min(16, y1-row)
+                band = src.read(1, window=Window(x0, row, x1-x0, count), masked=True)
+                block = band.astype(np.float32).filled(np.nan) * float(src.scales[0]) + float(src.offsets[0])
+                values[row-y0:row-y0+count] = block
+                log(f'قراءة المصدر: {row-y0+count}/{y1-y0} صفًا.')
+            source_transform = src.window_transform(Window(x0, y0, x1-x0, y1-y0))
+            source_crs = src.crs.to_wkt()
+            source_info = {'originalUrl': SOURCE_URL, 'referencePage': REFERENCE,
+                           'nominalPixelSpacingMeters': 200, 'sourceType': 'published_HRSC_MOLA_blend_v2',
+                           'sourceWindow': {'x': x0, 'y': y0, 'width': x1-x0, 'height': y1-y0},
+                           'independent200mMeasurementsEverywhere': False}
+    if use_cache:
+        source_info = cache_metadata['source']
+    else:
+        with rasterio.open(cache, 'w', driver='GTiff', width=values.shape[1], height=values.shape[0],
+                           count=1, dtype='float32', crs=source_crs, transform=source_transform,
+                           nodata=np.nan, compress='deflate', tiled=True) as dst:
+            dst.write(values, 1); dst.set_band_unit(1, 'm')
+        cache_metadata_file.write_text(json.dumps({'key': cache_key, 'source': source_info}, indent=2)+'\n')
+    elevation_halo = np.full((hh, hw), np.nan, dtype=np.float32)
+    reproject(source=values, destination=elevation_halo, src_transform=source_transform,
+              src_crs=source_crs, src_nodata=np.nan, dst_transform=halo_transform,
+              dst_crs=metric.to_wkt(), dst_nodata=np.nan, resampling=Resampling.average,
+              num_threads=2, init_dest_nodata=True)
+    valid = np.isfinite(elevation_halo)
+    if not valid.any():
+        raise ValueError('لا توجد ارتفاعات حقيقية؛ لن تُختلق بيانات بديلة.')
+    safe = np.where(valid, elevation_halo, 0).astype(np.float64)
+    fraction = uniform_filter(valid.astype(np.float64), size=5, mode='constant', cval=0)
+    local_mean = np.divide(uniform_filter(safe, size=5, mode='constant', cval=0), fraction,
+                           out=np.zeros_like(safe), where=fraction>0)
+    complete = valid & (fraction >= 1 - 1e-10)
+    gy, gx = np.gradient(safe, args.cell_m, args.cell_m)
+    slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+    deviation = np.abs(safe - local_mean)
+    raw = ~complete | (slope >= args.block_slope_deg) | (deviation >= args.block_localdev_m)
+    buffered = binary_dilation(raw, structure=np.array([[0,1,0],[1,1,1],[0,1,0]], dtype=bool))
+    crop = np.s_[halo:halo+height, halo:halo+width]
+    z = elevation_halo[crop].copy(); valid_final = valid[crop]
+    s = slope[crop]; d = deviation[crop]; blocked = buffered[crop]
+    grid = np.maximum(bands(s, (2,5,10)), bands(d, (10,30,60)))
+    grid[blocked] = -1
+    west, north = inverse.transform(left, top)
+    east, south = inverse.transform(left+width*args.cell_m, top-height*args.cell_m)
+    metadata = {
+        'mapId': 'jezero-regional-200m', 'model': 'experimental_regional_slope_and_local_mean_deviation',
+        'navigationScale': 'regional', 'notFlightCertified': True,
+        'cellSizeMeters': args.cell_m, 'width': width, 'height': height,
+        'areaSizeMeters': {'width': width*args.cell_m, 'height': height*args.cell_m},
+        'center': {'lon': center_lon, 'lat': center_lat}, 'crsWkt': metric.to_wkt(),
+        'affine': list(transform)[:6], 'rowOrder': 'north_to_south',
+        'projection': {'type': 'mars_spherical_equirectangular', 'radiusMeters': RADIUS,
+                       'standardParallelDegrees': center_lat, 'centralLongitudeDegrees': center_lon,
+                       'latitudeOriginDegrees': center_lat},
+        'requestedBounds': extent, 'rasterBounds': {'west': west, 'south': south, 'east': east, 'north': north},
+        'requestedTrekUrl': args.trek_url, 'selectionPolicy': 'entire_url_e_extent_with_symmetric_subcell_padding',
+        'haloCells': halo, 'source': source_info,
+        'elevationReference': 'published USGS HRSC/MOLA blend topography; not height above local ground',
+        'elevationStatistics': {'validCells': int(valid_final.sum()), 'missingCells': int((~valid_final).sum()),
+                                'minMeters': float(z[valid_final].min()), 'maxMeters': float(z[valid_final].max()),
+                                'meanMeters': float(z[valid_final].mean())},
+        'thresholds': {'blockedSlopeGreaterOrEqualDegrees': args.block_slope_deg,
+                       'blockedLocalDeviationGreaterOrEqualMeters': args.block_localdev_m,
+                       'localMeanWindowPlanningCells': 5, 'localMeanWindowNominalMeters': 5*args.cell_m,
+                       'safetyBufferMeters': args.cell_m, 'slopeCostBreaksDegrees': [2,5,10],
+                       'localDeviationCostBreaksMeters': [10,30,60]},
+        'counts': {'totalPlanningCells': width*height, 'blockedPlanningCells': int(blocked.sum()),
+                   'unknownPlanningCells': int((~complete[crop]).sum()),
+                   'byCost': {str(int(c)): int((grid==c).sum()) for c in np.unique(grid)}},
+        'warnings': ['Regional planning only, not small-rock or rover-scale hazard detection.',
+                     '200 m is nominal raster spacing, not independent measurement accuracy at every cell.',
+                     'Thresholds and a one-cell safety buffer are project assumptions, not NASA flight limits.',
+                     'Negative elevations are normal; elevation sign and global mean do not define obstacles.',
+                     'Physical slope accuracy varies with source coverage, interpolation and blend artifacts.',
+                     'Routes connect snapped cell centers; user-selected positions are not exact rover waypoints.'],
+    }
+    payload = {'width': width, 'height': height, 'grid': grid.tolist(), 'terrainMetadata': metadata}
+    args.terrain.parent.mkdir(parents=True, exist_ok=True)
+    args.terrain.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',',':'))+'\n')
+    (args.out/'metadata.json').write_text(json.dumps(metadata, ensure_ascii=False, allow_nan=False, indent=2)+'\n')
+    np.savez_compressed(args.out/'terrain_analysis.npz', elevations=z, valid=valid_final,
+                        grid=grid, slope_degrees=s.astype(np.float32), local_deviation_m=d.astype(np.float32))
+    with rasterio.open(args.out/'elevations.tif', 'w', driver='GTiff', width=width, height=height,
+                       count=1, dtype='float32', crs=metric.to_wkt(), transform=transform,
+                       nodata=np.nan, compress='deflate', tiled=True) as dst:
+        dst.write(z,1); dst.set_band_unit(1,'m')
+    elevation_payload = {'dataType': 'elevation_not_obstacle_cost', 'mapId': metadata['mapId'],
+                         'width': width, 'height': height, 'cellSizeMeters': args.cell_m,
+                         'elevationUnit': 'm', 'projection': metadata['projection'],
+                         'affine': metadata['affine'], 'requestedBounds': extent,
+                         'rasterBounds': metadata['rasterBounds'], 'source': source_info,
+                         'elevations': [[float(value) if math.isfinite(float(value)) else None for value in row] for row in z]}
+    (args.out/'elevations.json').write_text(json.dumps(elevation_payload, allow_nan=False, separators=(',',':'))+'\n')
+    print(json.dumps({'status':'success','terrainFile':str(args.terrain.resolve()),
+                      'width':width,'height':height,'cellSizeMeters':args.cell_m,
+                      'requestedBounds':extent,'elevationStatistics':metadata['elevationStatistics'],
+                      'counts':metadata['counts']},ensure_ascii=False,indent=2))
+
+
+def main():
+    p=argparse.ArgumentParser(description='جلب كامل نطاق Mars Trek وتحويله إلى شبكة تخطيط إقليمية من ارتفاعات USGS الحقيقية')
+    p.add_argument('--trek-url',default=DEFAULT_TREK_URL)
+    p.add_argument('--source',default=SOURCE_URL)
+    p.add_argument('--cell-m',type=float,default=200)
+    p.add_argument('--block-slope-deg',type=float,default=20)
+    p.add_argument('--block-localdev-m',type=float,default=80)
+    p.add_argument('--refresh',action='store_true',help='إعادة قراءة المصدر بدل القص المحلي المحفوظ')
+    p.add_argument('--out',type=Path,default=Path('regional_data'))
+    p.add_argument('--terrain',type=Path,default=Path('terrain.json'))
+    a=p.parse_args()
+    try: run(a); return 0
+    except Exception as e:
+        print(json.dumps({'status':'error','message':str(e)},ensure_ascii=False),file=sys.stderr); return 1
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
+
+
+==================== FILE: ./python/plot_regional_terrain.py ====================
+#!/usr/bin/env python3
+"""Plot real numeric elevations and regional costs; not a satellite basemap."""
+import argparse,json
+from pathlib import Path
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap,BoundaryNorm
+
+p=argparse.ArgumentParser()
+p.add_argument('--data',type=Path,required=True)
+p.add_argument('--out',type=Path,required=True)
+a=p.parse_args()
+m=json.loads((a.data/'metadata.json').read_text())
+d=np.load(a.data/'terrain_analysis.npz')
+b=m['rasterBounds'];extent=[b['west'],b['east'],b['south'],b['north']]
+fig,axes=plt.subplots(1,2,figsize=(13,6),constrained_layout=True)
+image=axes[0].imshow(d['elevations'],origin='upper',extent=extent,cmap='terrain',aspect='auto')
+fig.colorbar(image,ax=axes[0],shrink=.75,label='Elevation in published DEM reference (m)')
+axes[0].set_title('Full selected Jezero viewport: elevations')
+values=np.zeros(d['grid'].shape,dtype=np.int8)
+for i,cost in enumerate([-1,1,2,4,8]):values[d['grid']==cost]=i
+cmap=ListedColormap(['#c4453a','#edf1e7','#b6d5a1','#efd381','#c58d52'])
+norm=BoundaryNorm(np.arange(-.5,5.5,1),cmap.N)
+image=axes[1].imshow(values,origin='upper',extent=extent,cmap=cmap,norm=norm,aspect='auto')
+cb=fig.colorbar(image,ax=axes[1],shrink=.75,ticks=range(5));cb.ax.set_yticklabels(['Blocked (-1)','Cost 1','Cost 2','Cost 4','Cost 8'])
+axes[1].set_title('Experimental regional traversal cost map')
+for ax in axes:
+ ax.set_xlabel('East longitude (degrees)');ax.set_ylabel('Planetocentric latitude (degrees)')
+ ax.set_xlim(m['requestedBounds']['west'],m['requestedBounds']['east'])
+ ax.set_ylim(m['requestedBounds']['south'],m['requestedBounds']['north'])
+fig.suptitle(f"{m['width']} x {m['height']} cells | 200 m planning grid | no missing elevations\nRegional planning only: not small-rock or rover-scale hazard detection",fontsize=13)
+a.out.parent.mkdir(parents=True,exist_ok=True)
+fig.savefig(a.out,dpi=150)
+print(a.out)
+
+
+==================== FILE: ./tests/coordinates_unit.php ====================
+<?php
+
+require dirname(__DIR__).'/laravel/app/Exceptions/MarsPlanningException.php';
+require dirname(__DIR__).'/laravel/app/Services/MarsCoordinates.php';
+
+use App\Services\MarsCoordinates;
+
+$metadata = [
+    'cellSizeMeters' => 200,
+    'areaSizeMeters' => ['width' => 70600, 'height' => 59600],
+    'center' => ['lon' => 77.42982155, 'lat' => 18.46611095],
+    'crsWkt' => 'EQC MarsSphere R3396190 northup squaremetric',
+    'affine' => [200, 0, -35300, 0, -200, 29800],
+    'projection' => [
+        'type' => 'mars_spherical_equirectangular',
+        'radiusMeters' => 3396190,
+        'standardParallelDegrees' => 18.46611095,
+        'centralLongitudeDegrees' => 77.42982155,
+        'latitudeOriginDegrees' => 18.46611095,
+    ],
+    'requestedBounds' => ['west' => 76.80291421306124, 'south' => 17.96348644765699, 'east' => 78.05672888693876, 'north' => 18.96873545234301],
+    'rasterBounds' => ['west' => 76.802, 'south' => 17.963, 'east' => 78.057, 'north' => 18.969],
+    'warnings' => [],
+    'thresholds' => [],
+];
+
+MarsCoordinates::assertMetadata($metadata);
+$original = ['lon' => 77.5, 'lat' => 18.5];
+$projected = MarsCoordinates::project($original, $metadata);
+$inverse = MarsCoordinates::inverse($projected, $metadata);
+if (abs($inverse['lon'] - $original['lon']) > 1e-10 || abs($inverse['lat'] - $original['lat']) > 1e-10) {
+    throw new RuntimeException('Projection inverse round-trip failed.');
+}
+$center = MarsCoordinates::cellCenter(176, 148, $metadata);
+$expectedX = -35300 + 200 * (176.5);
+$expectedY = 29800 - 200 * (148.5);
+$centerProjected = MarsCoordinates::project($center, $metadata);
+if (abs($centerProjected['x'] - $expectedX) > 1e-7 || abs($centerProjected['y'] - $expectedY) > 1e-7) {
+    throw new RuntimeException('Affine cell-center mapping failed.');
+}
+echo "coordinates_unit: passed\n";
+
+
+==================== FILE: ./tests/briefing_unit.php ====================
+<?php
+// Run from the package root: php tests/briefing_unit.php
+require __DIR__.'/../laravel/app/Services/RouteBriefing.php';
+
+use App\Services\RouteBriefing;
+
+$fail = 0;
+function check(string $name, bool $ok, string $extra = ''): void {
+    global $fail;
+    echo ($ok ? 'PASS ' : 'FAIL ').$name.($extra !== '' ? "  [$extra]" : '')."\n";
+    if (!$ok) { $fail++; }
+}
+$deg = 200.0 / 3396190.0 * 180 / M_PI; // degrees of longitude per 200 m at the equator
+
+// ---- 1. hand-computed case --------------------------------------------------
+$elev = [[0.0, 10.0, 10.0]];
+$grid = [[1, 2, 4]];
+$path = [['x' => 0, 'y' => 0], ['x' => 1, 'y' => 0], ['x' => 2, 'y' => 0]];
+$geo  = [['lon' => 0.0, 'lat' => 0.0], ['lon' => $deg, 'lat' => 0.0], ['lon' => 2 * $deg, 'lat' => 0.0]];
+$pois = [
+    ['id' => 'near', 'name' => 'Near', 'type' => 't', 'lon' => $deg, 'lat' => 0.0],
+    ['id' => 'far', 'name' => 'Far', 'type' => 't', 'lon' => 1.0, 'lat' => 1.0],
+];
+$b = (new RouteBriefing($elev))->build($path, $geo, $grid, 200.0, 400.0, $pois, ['radiation_status' => 'NOMINAL']);
+$expSlope = rad2deg(atan(10 / 200));
+check('max slope', abs($b['terrain']['max_slope_deg'] - round($expSlope, 2)) < 1e-9, (string) $b['terrain']['max_slope_deg']);
+check('mean slope', abs($b['terrain']['mean_slope_deg'] - round($expSlope / 2, 2)) < 1e-9);
+check('ascent/descent', $b['terrain']['ascent_m'] === 10.0 && $b['terrain']['descent_m'] === 0.0);
+check('cost cells exclude start', $b['terrain']['cost_cells'] === [1 => 0, 2 => 1, 4 => 1, 8 => 0]);
+check('high-cost share 0.5 => CAUTION', $b['verdict'] === 'CAUTION' && $b['reasons'][0]['code'] === 'HIGH_COST_TERRAIN');
+check('eva 0.4 h round trip', $b['eva']['round_trip_hours'] === 0.4);
+check('science stops: near only', count($b['science_stops']) === 1 && $b['science_stops'][0]['id'] === 'near' && $b['science_stops'][0]['distance_to_path_m'] === 0.0);
+
+// ---- 2. verdict rules -------------------------------------------------------
+$flat = [[0.0, 0.0, 0.0]];
+$easy = [[1, 1, 1]];
+$mk = fn (?array $rad, float $dist = 400.0) => (new RouteBriefing($flat))->build($path, $geo, $easy, 200.0, $dist, [], $rad)['verdict'];
+check('nominal => GO', $mk(['radiation_status' => 'NOMINAL']) === 'GO');
+check('unknown radiation => CAUTION', $mk(null) === 'CAUTION');
+check('high radiation => NO-GO', $mk(['radiation_status' => 'HIGH_RADIATION_WARNING']) === 'NO-GO');
+check('8 h budget exceeded => NO-GO', $mk(['radiation_status' => 'NOMINAL'], 10000.0) === 'NO-GO'); // 10 km => 10 h round trip
+check('tight time => CAUTION', $mk(['radiation_status' => 'NOMINAL'], 6000.0) === 'CAUTION');   // 6 h of 8 h
+
+// ---- 3. same-cell route does not crash -------------------------------------
+$one = (new RouteBriefing($flat))->build([['x' => 0, 'y' => 0]], [['lon' => 0.0, 'lat' => 0.0]], $easy, 200.0, 0.0, [], ['radiation_status' => 'NOMINAL']);
+check('single-cell route => GO', $one['verdict'] === 'GO' && $one['terrain']['steps'] === 0);
+
+// ---- 4. real Jezero data ----------------------------------------------------
+$root = dirname(__DIR__);
+$terrain = json_decode(file_get_contents("$root/laravel/storage/app/private/mars/jezero-regional-200m/terrain.json"), true);
+$result  = json_decode(file_get_contents("$root/tests/example_route_response.json"), true);
+$svc = RouteBriefing::fromFile("$root/laravel/storage/app/private/mars/jezero-regional-200m/elevations.json");
+$t0 = microtime(true);
+$out = $svc->attach($result, $terrain['grid'], 200.0, [], ['radiation_status' => 'NOMINAL']);
+$ms = round((microtime(true) - $t0) * 1000);
+check('real: every path got a briefing', count(array_filter($out['paths'], fn ($p) => isset($p['briefing']))) === count($out['paths']));
+check('real: verdict copied into GeoJSON', ($out['geojson']['features'][0]['properties']['verdict'] ?? null) === $out['paths'][0]['briefing']['verdict']);
+check('real: 96 km route is NO-GO on EVA time', $out['verdict'] === 'NO-GO');
+echo json_encode(['ms' => $ms, 'path0' => ['terrain' => $out['paths'][0]['briefing']['terrain'], 'eva' => $out['paths'][0]['briefing']['eva'], 'reasons' => $out['paths'][0]['briefing']['reasons']]], JSON_PRETTY_PRINT)."\n";
+
+echo $fail === 0 ? "\nALL PASSED\n" : "\n$fail FAILED\n";
+exit($fail === 0 ? 0 : 1);
+
+
+==================== FILE: ./tests/space_weather_unit.php ====================
+<?php
+// Logic-only test of SpaceWeather::classify (Laravel's now() helper is stubbed).
+namespace { 
+    class FakeNow { function toIso8601String() { return '2026-11-14T00:00:00+00:00'; } }
+    function now() { return new FakeNow(); }
+}
+namespace {
+    require __DIR__.'/../laravel/app/Services/SpaceWeather.php';
+    $w = new App\Services\SpaceWeather();
+    $fail = 0;
+    $t = function (string $n, bool $ok) use (&$fail) { echo ($ok ? 'PASS ' : 'FAIL ').$n."\n"; if (!$ok) $fail++; };
+    $t('no flares => NOMINAL', $w->classify([])['radiation_status'] === 'NOMINAL');
+    $t('C9.9 => NOMINAL', $w->classify([['classType' => 'C9.9']])['radiation_status'] === 'NOMINAL');
+    $t('M1.2 => NOMINAL', $w->classify([['classType' => 'M1.2']])['radiation_status'] === 'NOMINAL');
+    $t('M5.0 => ELEVATED', $w->classify([['classType' => 'M5.0']])['radiation_status'] === 'ELEVATED');
+    $t('X1.0 => HIGH', $w->classify([['classType' => 'X1.0']])['radiation_status'] === 'HIGH_RADIATION_WARNING');
+    // regression: old code used end($flares); an X flare followed by a weaker one was reported SAFE
+    $r = $w->classify([['classType' => 'X2.1', 'beginTime' => 'a'], ['classType' => 'C1.0', 'beginTime' => 'b']]);
+    $t('strongest wins, not last (old bug)', $r['radiation_status'] === 'HIGH_RADIATION_WARNING' && $r['strongest_flare_class'] === 'X2.1');
+    $t('garbage classType ignored', $w->classify([['classType' => 'zz'], []])['radiation_status'] === 'NOMINAL');
+    echo $fail === 0 ? "ALL PASSED\n" : "$fail FAILED\n"; exit($fail ? 1 : 0);
+}
+
+
+==================== FILE: ./tests/backend_integration.php ====================
+<?php
+// Standalone CLI integration. Isolated in-memory SQLite, not your real application database.
+$vendor = $argv[1] ?? null; $binary = $argv[2] ?? null;
+if (!$vendor || !$binary) {
+    fwrite(STDERR, "Usage: php tests/backend_integration.php vendor/autoload.php bin/rover_pathfinder\n"); exit(2);
+}
+require $vendor;
+$root = dirname(__DIR__);
+spl_autoload_register(function ($class) use ($root): void {
+    if (str_starts_with($class, 'App\\')) {
+        $file = $root.'/laravel/app/'.str_replace('\\', '/', substr($class, 4)).'.php';
+        if (is_file($file)) require_once $file;
+    }
+}, true, true);
+if (!class_exists('App\\Http\\Controllers\\Controller')) class_alias(Illuminate\Routing\Controller::class, 'App\\Http\\Controllers\\Controller');
+$app = new Illuminate\Foundation\Application($root.'/tests');
+$config = new Illuminate\Config\Repository([
+    'app' => ['key' => 'isolated-regional-test-key', 'env' => 'testing', 'debug' => true, 'locale' => 'en', 'fallback_locale' => 'en'],
+    'database' => ['default' => 'sqlite', 'connections' => ['sqlite' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '', 'foreign_key_constraints' => true]]],
+    'view' => ['paths' => [], 'compiled' => sys_get_temp_dir()],
+    'logging' => ['default' => 'single', 'channels' => ['single' => ['driver' => 'single', 'path' => sys_get_temp_dir().'/mars-regional-test.log']]],
+    'mars' => [
+        'binary' => realpath($binary), 'timeout_seconds' => 120,
+        'temporary_directory' => sys_get_temp_dir().'/mars-regional-'.getmypid(),
+        'maps' => ['jezero-regional-200m' => [
+            'terrain_file' => $root.'/laravel/storage/app/private/mars/jezero-regional-200m/terrain.json',
+            'title' => 'Jezero full selected viewport — regional 200m',
+        ]],
+    ],
+]);
+$app->instance('config', $config);
+$app->instance('request', Illuminate\Http\Request::create('http://localhost/'));
+Illuminate\Support\Facades\Facade::setFacadeApplication($app);
+foreach ([Illuminate\Filesystem\FilesystemServiceProvider::class, Illuminate\Translation\TranslationServiceProvider::class,
+          Illuminate\Validation\ValidationServiceProvider::class, Illuminate\View\ViewServiceProvider::class,
+          Illuminate\Database\DatabaseServiceProvider::class] as $provider) $app->register($provider);
+$app->boot();
+$app->singleton(Illuminate\Contracts\Debug\ExceptionHandler::class, Illuminate\Foundation\Exceptions\Handler::class);
+(new Illuminate\Foundation\Providers\FoundationServiceProvider($app))->registerRequestValidation();
+foreach (glob($root.'/laravel/database/migrations/*.php') as $file) { $migration = require $file; $migration->up(); }
+$terrain = new App\Services\MarsTerrainMap($config);
+$planner = new App\Services\MarsPathfinder($config, $terrain);
+$controller = new App\Http\Controllers\MarsRouteController;
+$map = $terrain->load('jezero-regional-200m');
+$session = new Illuminate\Session\Store('test', new Illuminate\Session\ArraySessionHandler(120)); $session->start();
+$checkCount = 0;
+function check($condition, $message): void { global $checkCount; if (!$condition) throw new RuntimeException($message); $checkCount++; }
+function requestFor(array $payload, $session): Illuminate\Http\Request {
+    $request = Illuminate\Http\Request::create('/mars/routes', 'POST', [], [], [], [
+        'CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json',
+    ], json_encode($payload));
+    $request->setLaravelSession($session); return $request;
+}
+function payloadFor(array $start, array $target, array $map): array {
+    return ['map_id' => $map['map_id'], 'map_version' => $map['version'], 'start' => $start, 'target' => $target];
+}
+check($map['width'] === 353 && $map['height'] === 298, 'Entire selected viewport dimensions');
+check(!isset($map['start']) && !isset($map['target']), 'Terrain has no static endpoints');
+$public = $controller->terrain('jezero-regional-200m', $terrain)->getData(true);
+check(isset($public['requested_bounds'], $public['raster_bounds'], $public['projection']), 'Geographic transform contract');
+check($public['regional_scale'] === 'regional' && $public['cell_size_meters'] == 200, 'Regional scale disclosed');
+check(!str_contains(json_encode($public), '/home/ubuntu'), 'No server paths exposed');
+$cases = [
+    ['southwest_to_northeast', ['lon' => 77.0, 'lat' => 18.1], ['lon' => 77.9, 'lat' => 18.8], 600],
+    ['northwest_to_southeast', ['lon' => 76.85, 'lat' => 18.9], ['lon' => 78.0, 'lat' => 18.05], 774],
+    ['grid_input', ['x' => 55, 'y' => 257], ['x' => 308, 'y' => 50], 600],
+    ['same_point', ['lon' => 77.42982155, 'lat' => 18.46611095], ['lon' => 77.42982155, 'lat' => 18.46611095], 0],
+];
+$summaryCases = []; $savedResults = [];
+foreach ($cases as [$name, $startInput, $targetInput, $expected]) {
+    $beforeTime = microtime(true);
+    $response = $controller->store(requestFor(payloadFor($startInput, $targetInput, $map), $session), $terrain, $planner);
+    $elapsed = microtime(true) - $beforeTime;
+    $data = $response->getData(true);
+    check($response->getStatusCode() === 200 && $data['status'] === 'success', 'Success: '.json_encode($data));
+    check($data['requested_start'] == $startInput && $data['requested_target'] == $targetInput, 'Original selected points returned');
+    check($data['paths'][0]['cost'] == $expected, 'Actual least cost matches independent baseline');
+    check(count($data['paths']) === ($name === 'same_point' ? 1 : 3), 'Correct number of loopless routes');
+    $record = App\Models\MarsRouteRequest::findOrFail($data['request_id']);
+    check($record->status === 'success' && $record->input_coordinates['start'] == $startInput, 'Selected input persisted');
+    check($record->start_x === $data['start']['x'] && $record->target_y === $data['target']['y'], 'Canonical cells persisted');
+    check($record->result['request_id'] === $data['request_id'], 'Full result persisted');
+    $distinct = [];
+    foreach ($data['paths'] as $route) {
+        $points = $route['path'];
+        check($points[0] === $data['start'] && end($points) === $data['target'], 'Each route matches the requested cells');
+        check(count($route['geographic_path']) === count($points), 'Geographic path for every cell');
+        check($route['distance_meters'] == 200 * (count($points)-1), 'Projected grid length');
+        $sum = 0; $seen = [];
+        foreach ($points as $i => $point) {
+            $id = $point['y'] * $map['width'] + $point['x'];
+            check(!isset($seen[$id]), 'Loopless route'); $seen[$id] = true;
+            check($map['grid'][$point['y']][$point['x']] >= 0, 'No forbidden cell');
+            if ($i) { $before = $points[$i-1]; check(abs($before['x']-$point['x'])+abs($before['y']-$point['y'])===1, 'Four-neighbor path'); $sum += $map['grid'][$point['y']][$point['x']]; }
+            $geo = $route['geographic_path'][$i]; $b = $map['requested_bounds'];
+            check($geo['lon'] >= $b['west'] && $geo['lon'] <= $b['east'] && $geo['lat'] >= $b['south'] && $geo['lat'] <= $b['north'], 'Returned centers remain inside full viewport');
+        }
+        check($sum == $route['cost'], 'Entered-cell cost verified');
+        $hash = hash('sha256', json_encode($points)); check(!isset($distinct[$hash]), 'Distinct paths'); $distinct[$hash]=true;
+        check($route['geojson']['geometry']['type'] === ($name === 'same_point' ? 'Point' : 'LineString'), 'Valid GeoJSON geometry');
+    }
+    check($data['geojson']['type'] === 'FeatureCollection' && count($data['geojson']['features']) === count($data['paths']), 'Root GeoJSON for frontend');
+    $summaryCases[] = ['case' => $name, 'request_id' => $data['request_id'], 'requested_start' => $startInput,
+                      'requested_target' => $targetInput, 'costs' => array_column($data['paths'], 'cost'),
+                      'distance_meters' => array_column($data['paths'], 'distance_meters'), 'elapsed_seconds_on_sandbox' => round($elapsed,4)];
+    $savedResults[$name] = $data;
+}
+$first = $summaryCases[0]['request_id'];
+$shown = $controller->show(requestFor([], $session), $first)->getData(true);
+check($shown['input_coordinates']['start'] == $cases[0][1], 'Saved request retrievable');
+$other = new Illuminate\Session\Store('other', new Illuminate\Session\ArraySessionHandler(120)); $other->start();
+try { $controller->show(requestFor([], $other), $first); throw new RuntimeException('Cross-session record access'); }
+catch (Illuminate\Database\Eloquent\ModelNotFoundException $e) { check(true, 'Session ownership enforced'); }
+$before = App\Models\MarsRouteRequest::count();
+$blocked = null;
+foreach ($map['grid'] as $y => $row) { foreach ($row as $x => $cost) if ($cost < 0) { $blocked=['x'=>$x,'y'=>$y]; break 2; } }
+check($blocked !== null, 'Actual terrain contains modeled obstacles');
+$blockedGeo = $terrain->cellCenter($map, $blocked);
+$blockedResponse = $controller->store(requestFor(payloadFor($blockedGeo, $cases[0][2], $map), $session), $terrain, $planner);
+check($blockedResponse->getStatusCode()===422 && $blockedResponse->getData(true)['error_code']==='BLOCKED_POINT', 'Blocked geographic selection rejected without relocation');
+foreach ([['lon'=>76.7,'lat'=>18.5], ['x'=>353,'y'=>0], ['lon'=>77.0,'lat'=>18.1,'x'=>1], ['lon'=>'77.0','lat'=>18.1]] as $bad) {
+    try { $controller->store(requestFor(payloadFor($bad, $cases[0][2], $map), $session), $terrain, $planner); throw new RuntimeException('Invalid coordinate accepted'); }
+    catch (Illuminate\Validation\ValidationException $e) { check($e->status===422, 'Invalid coordinate is 422'); }
+}
+$stale = payloadFor($cases[0][1], $cases[0][2], $map); $stale['map_version']=str_repeat('0',64);
+$staleResponse=$controller->store(requestFor($stale,$session),$terrain,$planner);
+check($staleResponse->getStatusCode()===409, 'Stale map version rejected');
+check(App\Models\MarsRouteRequest::count()===$before, 'Invalid requests are not successful saved routes');
+check(glob($config->get('mars.temporary_directory').'/route_*')===[], 'Temporary request files cleaned');
+$result=['status'=>'passed','framework'=>Illuminate\Foundation\Application::VERSION,'checks'=>$checkCount,
+         'map_id'=>$map['map_id'],'map_version'=>$map['version'],'dimensions'=>[$map['width'],$map['height']],
+         'cases'=>$summaryCases,'database'=>'isolated SQLite in-memory',
+         'note'=>'Actual Laravel controller/service and native solver CLI integration; HTTP middleware and user frontend not yet tested'];
+file_put_contents($root.'/tests/backend_test_result.json',json_encode($result,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)."\n");
+file_put_contents($root.'/tests/example_route_response.json',json_encode($savedResults['southwest_to_northeast'],JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)."\n");
+file_put_contents($root.'/tests/example_route_request.json',json_encode(payloadFor($cases[0][1],$cases[0][2],$map),JSON_PRETTY_PRINT)."\n");
+echo json_encode($result,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)."\n";
+foreach (glob($config->get('mars.temporary_directory').'/*.lock') as $file) unlink($file);
+rmdir($config->get('mars.temporary_directory'));
+
+
+==================== FILE: ./tests/test_native_routes.py ====================
+#!/usr/bin/env python3
+"""Correctness tests for the native Jezero rover route solver.
+
+The generated grids are intentionally small algorithm fixtures, not surface
+raster data. Tests verify exact route costs, looplessness, uniqueness, and the
+unchanged JSON/exit-code contract.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOLVER = Path(os.environ.get("ROVER_BINARY", str(ROOT / "native" / "rover_pathfinder")))
+RESULT_FILE = Path(__file__).resolve().parent / "native_test_result.json"
+Point = Tuple[int, int]
+Route = Tuple[float, Tuple[Point, ...]]
+
+
+def neighbors(point: Point, width: int, height: int) -> Iterable[Point]:
+    x, y = point
+    # This order is independent of solver tie ordering; tests compare equal
+    # cost route identities as a set while requiring the sorted cost prefix.
+    for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < width and 0 <= ny < height:
+            yield nx, ny
+
+
+def enumerate_simple_routes(
+    grid: Sequence[Sequence[float]], start: Point, target: Point
+) -> List[Route]:
+    """Enumerate all simple routes, paying the value of each entered cell."""
+    height = len(grid)
+    width = len(grid[0])
+    routes: List[Route] = []
+
+    def visit(point: Point, path: List[Point], cost: float) -> None:
+        if point == target:
+            routes.append((cost, tuple(path)))
+            return
+        for nxt in neighbors(point, width, height):
+            if nxt in path or grid[nxt[1]][nxt[0]] < 0:
+                continue
+            visit(nxt, path + [nxt], cost + float(grid[nxt[1]][nxt[0]]))
+
+    if grid[start[1]][start[0]] >= 0 and grid[target[1]][target[0]] >= 0:
+        visit(start, [start], 0.0)
+    return sorted(routes, key=lambda item: (item[0], item[1]))
+
+
+def make_case(grid: Sequence[Sequence[float]], start: Point, target: Point) -> Dict:
+    return {
+        "width": len(grid[0]),
+        "height": len(grid),
+        "start": {"x": start[0], "y": start[1]},
+        "target": {"x": target[0], "y": target[1]},
+        "grid": [list(row) for row in grid],
+    }
+
+
+class NativeSolverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not SOLVER.is_file():
+            raise AssertionError(
+                "compiled solver missing; build native/rover_pathfinder.cpp first"
+            )
+
+    def run_json(self, document: Dict) -> Tuple[int, Dict]:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as handle:
+            json.dump(document, handle)
+            input_path = handle.name
+        try:
+            completed = subprocess.run(
+                [str(SOLVER), input_path],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            Path(input_path).unlink(missing_ok=True)
+        self.assertTrue(completed.stdout.strip(), msg=completed.stderr)
+        try:
+            output = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            self.fail(f"solver emitted invalid JSON: {exc}: {completed.stdout}")
+        return completed.returncode, output
+
+    def run_raw(self, raw: str) -> Tuple[int, Dict]:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as handle:
+            handle.write(raw)
+            input_path = handle.name
+        try:
+            completed = subprocess.run(
+                [str(SOLVER), input_path],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            Path(input_path).unlink(missing_ok=True)
+        self.assertTrue(completed.stdout.strip(), msg=completed.stderr)
+        return completed.returncode, json.loads(completed.stdout)
+
+    def assert_exact_route_prefix(
+        self, grid: Sequence[Sequence[float]], start: Point, target: Point
+    ) -> None:
+        expected = enumerate_simple_routes(grid, start, target)
+        returncode, output = self.run_json(make_case(grid, start, target))
+        self.assertEqual(returncode, 0)
+
+        if not expected:
+            self.assertEqual(output.get("status"), "error")
+            self.assertEqual(output.get("error_code"), "NO_PATH")
+            self.assertEqual(output.get("paths"), [])
+            return
+
+        self.assertEqual(output.get("status"), "success")
+        actual = output.get("paths")
+        self.assertIsInstance(actual, list)
+        expected_prefix = expected[:3]
+        self.assertEqual(len(actual), len(expected_prefix))
+
+        actual_paths = []
+        actual_costs = []
+        for rank, route in enumerate(actual, 1):
+            self.assertEqual(route.get("rank"), rank)
+            points = tuple(
+                (point["x"], point["y"]) for point in route.get("path", [])
+            )
+            self.assertGreaterEqual(len(points), 1)
+            self.assertEqual(points[0], start)
+            self.assertEqual(points[-1], target)
+            self.assertEqual(len(points), len(set(points)), "route is not loopless")
+            for current, nxt in zip(points, points[1:]):
+                self.assertEqual(abs(current[0] - nxt[0]) + abs(current[1] - nxt[1]), 1)
+                self.assertGreaterEqual(grid[nxt[1]][nxt[0]], 0)
+            calculated = sum(float(grid[y][x]) for x, y in points[1:])
+            reported = float(route["cost"])
+            self.assertTrue(
+                math.isclose(reported, calculated, rel_tol=0.0, abs_tol=1e-9),
+                msg=f"reported {reported} != calculated {calculated}",
+            )
+            actual_paths.append(points)
+            actual_costs.append(reported)
+
+        self.assertEqual(len(actual_paths), len(set(actual_paths)), "duplicate route")
+        self.assertEqual(actual_costs, sorted(actual_costs))
+        self.assertEqual(
+            actual_costs,
+            [cost for cost, _ in expected_prefix],
+            "returned cost prefix is not exact",
+        )
+        self.assertEqual(output.get("path"), actual[0]["path"])
+
+    def test_same_start_target_and_zero_cost(self) -> None:
+        self.assert_exact_route_prefix([[0]], (0, 0), (0, 0))
+        self.assert_exact_route_prefix([[0, 0, 0]], (0, 0), (2, 0))
+
+    def test_single_path_and_entered_cell_costs(self) -> None:
+        self.assert_exact_route_prefix([[0, 1, 2, 4, 8]], (0, 0), (4, 0))
+
+    def test_obstacles_and_no_path(self) -> None:
+        self.assert_exact_route_prefix(
+            [
+                [0, -1, 4],
+                [1, -1, 8],
+                [2, -1, 1],
+            ],
+            (0, 0),
+            (2, 0),
+        )
+        self.assert_exact_route_prefix(
+            [[0, -1, 1], [-1, -1, -1], [1, -1, 0]], (0, 0), (2, 2)
+        )
+
+    def test_exhaustive_weighted_fixtures(self) -> None:
+        fixtures = [
+            ([[0, 1], [2, 0], [1, 2]], (0, 0), (1, 2)),
+            (
+                [[0, 2, 4], [1, 0, 8], [2, 1, 0]],
+                (0, 0),
+                (2, 2),
+            ),
+            (
+                [[0, 1, -1, 2], [2, 4, 1, 8], [4, 0, 2, 1]],
+                (0, 0),
+                (3, 2),
+            ),
+        ]
+        for grid, start, target in fixtures:
+            with self.subTest(width=len(grid[0]), height=len(grid)):
+                self.assert_exact_route_prefix(grid, start, target)
+
+    def test_bounded_random_small_fixtures(self) -> None:
+        rng = random.Random(105194)
+        values = [-1, 0, 1, 2, 4, 8]
+        for index in range(24):
+            width, height = rng.choice([(2, 3), (3, 3), (4, 3)])
+            grid = [[rng.choice(values) for _ in range(width)] for _ in range(height)]
+            start, target = (0, 0), (width - 1, height - 1)
+            grid[start[1]][start[0]] = 0
+            grid[target[1]][target[0]] = rng.choice([0, 1, 2, 4, 8])
+            with self.subTest(fixture=index, width=width, height=height):
+                self.assert_exact_route_prefix(grid, start, target)
+
+    def test_malformed_json(self) -> None:
+        returncode, output = self.run_raw('{"width":')
+        self.assertEqual(returncode, 1)
+        self.assertEqual(output.get("status"), "error")
+        self.assertEqual(output.get("error_code"), "INVALID_JSON")
+
+    def test_bounds_validation(self) -> None:
+        for width, height in ((1001, 1000), (1000, 1001)):
+            with self.subTest(width=width, height=height):
+                returncode, output = self.run_json(
+                    {"width": width, "height": height}
+                )
+                self.assertEqual(returncode, 1)
+                self.assertEqual(output.get("status"), "error")
+                self.assertEqual(output.get("error_code"), "INVALID_INPUT")
+
+
+def main() -> int:
+    started = time.monotonic()
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(NativeSolverTests)
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    failures = [name for case, _ in result.failures for name in [case.id()]]
+    errors = [name for case, _ in result.errors for name in [case.id()]]
+    summary = {
+        "status": "passed" if result.wasSuccessful() else "failed",
+        "tests_run": result.testsRun,
+        "failures": failures,
+        "errors": errors,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "solver": str(SOLVER),
+    }
+    RESULT_FILE.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return 0 if result.wasSuccessful() else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+==================== FILE: ./native/rover_pathfinder.cpp ====================
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <queue>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+namespace {
+
+using json = nlohmann::json;
+constexpr int kMaxPaths = 3;
+constexpr std::int64_t kMaxGridCells = 1'000'000;
+
+struct Route {
+  std::vector<int> nodes;
+  double cost = 0.0;
+};
+
+struct QueueItem {
+  double priority;
+  double pathCost;
+  int node;
+};
+
+struct QueueItemGreater {
+  bool operator()(const QueueItem &a, const QueueItem &b) const {
+    if (a.priority != b.priority) return a.priority > b.priority;
+    if (a.pathCost != b.pathCost) return a.pathCost < b.pathCost;
+    return a.node > b.node;
+  }
+};
+
+struct RouteGreater {
+  bool operator()(const Route &a, const Route &b) const {
+    if (a.cost != b.cost) return a.cost > b.cost;
+    return a.nodes > b.nodes;
+  }
+};
+
+struct Coordinate {
+  int x;
+  int y;
+};
+
+int readInteger(const json &value, const std::string &description) {
+  if (!value.is_number_integer() && !value.is_number_unsigned()) {
+    throw std::runtime_error(description + " يجب أن يكون عددًا صحيحًا.");
+  }
+
+  if (value.is_number_unsigned()) {
+    const auto number = value.get<std::uint64_t>();
+    if (number > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error(description + " خارج النطاق المدعوم.");
+    }
+    return static_cast<int>(number);
+  }
+
+  const auto number = value.get<std::int64_t>();
+  if (number < std::numeric_limits<int>::min() ||
+      number > std::numeric_limits<int>::max()) {
+    throw std::runtime_error(description + " خارج النطاق المدعوم.");
+  }
+  return static_cast<int>(number);
+}
+
+Coordinate readCoordinate(const json &document, const std::string &key) {
+  if (!document.contains(key) || !document.at(key).is_object()) {
+    throw std::runtime_error("الحقل '" + key + "' يجب أن يكون كائنًا يحتوي x و y.");
+  }
+  const auto &value = document.at(key);
+  if (!value.contains("x") || !value.contains("y")) {
+    throw std::runtime_error("الحقل '" + key + "' يجب أن يحتوي x و y.");
+  }
+  return {readInteger(value.at("x"), key + ".x"),
+          readInteger(value.at("y"), key + ".y")};
+}
+
+int toNodeId(int x, int y, int width) { return y * width + x; }
+
+std::pair<int, int> fromNodeId(int id, int width) {
+  return {id % width, id / width};
+}
+
+bool hasPrefix(const std::vector<int> &path, const std::vector<int> &prefix) {
+  return path.size() >= prefix.size() &&
+         std::equal(prefix.begin(), prefix.end(), path.begin());
+}
+
+// Reverse Dijkstra on the intact grid. For a forward edge predecessor ->
+// current, the edge cost is grid[current], so reverse relaxation pays the
+// current node's value rather than the predecessor's value. Negative cells
+// are obstacles and are excluded from the reverse graph.
+std::vector<double> reverseDistancesToTarget(
+    const std::vector<std::vector<double>> &grid, int width, int height,
+    int target) {
+  const int nodeCount = width * height;
+  const double infinity = std::numeric_limits<double>::infinity();
+  std::vector<double> distance(nodeCount, infinity);
+  std::priority_queue<QueueItem, std::vector<QueueItem>, QueueItemGreater>
+      open;
+
+  distance[target] = 0.0;
+  open.push({0.0, 0.0, target});
+
+  const int dx[4] = {0, 0, -1, 1};
+  const int dy[4] = {-1, 1, 0, 0};
+
+  while (!open.empty()) {
+    const QueueItem current = open.top();
+    open.pop();
+    if (current.pathCost != distance[current.node]) continue;
+
+    const auto [x, y] = fromNodeId(current.node, width);
+    if (grid[y][x] < 0.0) continue;
+    for (int direction = 0; direction < 4; ++direction) {
+      const int px = x + dx[direction];
+      const int py = y + dy[direction];
+      if (px < 0 || px >= width || py < 0 || py >= height) continue;
+
+      const int predecessor = toNodeId(px, py, width);
+      if (grid[py][px] < 0.0) continue;
+      const double predecessorDistance = current.pathCost + grid[y][x];
+      if (predecessorDistance < distance[predecessor]) {
+        distance[predecessor] = predecessorDistance;
+        open.push({predecessorDistance, predecessorDistance, predecessor});
+      }
+    }
+  }
+  return distance;
+}
+
+// A* on the grid after removing banned nodes/edges. The heuristic is the
+// original-grid distance to target, so bans can only make it more optimistic.
+// The cost of the starting cell is excluded; each move pays the cost of the
+// cell entered. Every negative grid value is treated as an obstacle.
+bool shortestPath(const std::vector<std::vector<double>> &grid, int width,
+                  int height, int start, int target,
+                  const std::set<int> &bannedNodes,
+                  const std::set<std::pair<int, int>> &bannedEdges,
+                  const std::vector<double> &heuristic,
+                  Route &result) {
+  const int nodeCount = width * height;
+  if (bannedNodes.count(start) || bannedNodes.count(target)) return false;
+
+  std::vector<double> distance(nodeCount, std::numeric_limits<double>::infinity());
+  std::vector<int> parent(nodeCount, -1);
+  std::priority_queue<QueueItem, std::vector<QueueItem>, QueueItemGreater> open;
+
+  distance[start] = 0.0;
+  open.push({heuristic[start], 0.0, start});
+
+  const int dx[4] = {0, 0, -1, 1};
+  const int dy[4] = {-1, 1, 0, 0};
+
+  while (!open.empty()) {
+    const QueueItem current = open.top();
+    open.pop();
+
+    if (current.pathCost != distance[current.node]) continue;
+    if (current.node == target) break;
+
+    const auto [x, y] = fromNodeId(current.node, width);
+    for (int direction = 0; direction < 4; ++direction) {
+      const int nx = x + dx[direction];
+      const int ny = y + dy[direction];
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+
+      const int next = toNodeId(nx, ny, width);
+      if (bannedNodes.count(next) || bannedEdges.count({current.node, next})) continue;
+      const double terrainCost = grid[ny][nx];
+      if (terrainCost < 0.0) continue;
+
+      const double nextCost = current.pathCost + terrainCost;
+      if (nextCost < distance[next]) {
+        distance[next] = nextCost;
+        parent[next] = current.node;
+        open.push({nextCost + heuristic[next], nextCost, next});
+      }
+    }
+  }
+
+  if (!std::isfinite(distance[target])) return false;
+
+  std::vector<int> reversed;
+  for (int node = target; node != -1; node = parent[node]) {
+    reversed.push_back(node);
+    if (node == start) break;
+  }
+  if (reversed.empty() || reversed.back() != start) return false;
+
+  std::reverse(reversed.begin(), reversed.end());
+  result.nodes = std::move(reversed);
+  result.cost = distance[target];
+  return true;
+}
+
+double pathCost(const std::vector<int> &path,
+                const std::vector<std::vector<double>> &grid, int width) {
+  double total = 0.0;
+  for (std::size_t i = 1; i < path.size(); ++i) {
+    const auto [x, y] = fromNodeId(path[i], width);
+    total += grid[y][x];
+  }
+  return total;
+}
+
+std::vector<Route> yenKShortestPaths(
+    const std::vector<std::vector<double>> &grid, int width, int height,
+    int start, int target, int wanted) {
+  std::vector<Route> accepted;
+  std::set<std::vector<int>> knownPaths;
+  std::priority_queue<Route, std::vector<Route>, RouteGreater> candidates;
+  const std::vector<double> heuristic =
+      reverseDistancesToTarget(grid, width, height, target);
+
+  Route first;
+  if (!shortestPath(grid, width, height, start, target, {}, {}, heuristic,
+                    first)) {
+    return accepted;
+  }
+  accepted.push_back(first);
+  knownPaths.insert(first.nodes);
+
+  for (int routeIndex = 1; routeIndex < wanted; ++routeIndex) {
+    const std::vector<int> &previous = accepted.back().nodes;
+
+    for (std::size_t spurIndex = 0; spurIndex + 1 < previous.size(); ++spurIndex) {
+      std::vector<int> root(previous.begin(), previous.begin() + spurIndex + 1);
+      const int spurNode = root.back();
+
+      std::set<int> bannedNodes;
+      for (std::size_t i = 0; i + 1 < root.size(); ++i) {
+        bannedNodes.insert(root[i]);
+      }
+
+      std::set<std::pair<int, int>> bannedEdges;
+      for (const Route &route : accepted) {
+        if (route.nodes.size() > spurIndex + 1 && hasPrefix(route.nodes, root)) {
+          bannedEdges.insert({route.nodes[spurIndex], route.nodes[spurIndex + 1]});
+        }
+      }
+
+      Route spur;
+      if (!shortestPath(grid, width, height, spurNode, target, bannedNodes,
+                        bannedEdges, heuristic, spur)) {
+        continue;
+      }
+
+      std::vector<int> combined(root.begin(), root.end() - 1);
+      combined.insert(combined.end(), spur.nodes.begin(), spur.nodes.end());
+      if (knownPaths.insert(combined).second) {
+        candidates.push({combined, pathCost(combined, grid, width)});
+      }
+    }
+
+    if (candidates.empty()) break;
+    accepted.push_back(candidates.top());
+    candidates.pop();
+  }
+
+  return accepted;
+}
+
+json pathToJson(const std::vector<int> &path, int width) {
+  json output = json::array();
+  for (int node : path) {
+    const auto [x, y] = fromNodeId(node, width);
+    output.push_back({{"x", x}, {"y", y}});
+  }
+  return output;
+}
+
+void printError(const std::string &code, const std::string &message) {
+  json output = {{"status", "error"}, {"error_code", code}, {"message", message}};
+  std::cout << output.dump(2) << '\n';
+}
+
+}  // namespace
+
+int main(int argc, char *argv[]) {
+  if (argc > 2) {
+    printError("USAGE", "استخدم: rover_pathfinder [مسار_ملف_JSON]، أو ضع input.json في مجلد التشغيل.");
+    return 2;
+  }
+
+  const std::string inputPath = argc == 2 ? argv[1] : "input.json";
+  std::ifstream inputFile(inputPath, std::ios::binary);
+  if (!inputFile) {
+    printError("FILE_NOT_FOUND", "تعذر فتح ملف الإدخال: " + inputPath);
+    return 1;
+  }
+
+  try {
+    json document;
+    inputFile >> document;
+    if (!document.is_object()) {
+      throw std::runtime_error("يجب أن يكون محتوى الملف كائن JSON.");
+    }
+
+    if (!document.contains("width") || !document.contains("height")) {
+      throw std::runtime_error("يجب توفير width و height.");
+    }
+    const int width = readInteger(document.at("width"), "width");
+    const int height = readInteger(document.at("height"), "height");
+    if (width <= 0 || height <= 0) {
+      throw std::runtime_error("يجب أن يكون width و height أكبر من صفر.");
+    }
+    const std::int64_t cellCount = static_cast<std::int64_t>(width) * height;
+    if (cellCount > kMaxGridCells) {
+      throw std::runtime_error("حجم الشبكة أكبر من الحد المدعوم (مليون خلية).");
+    }
+
+    const Coordinate start = readCoordinate(document, "start");
+    const Coordinate target = readCoordinate(document, "target");
+    const auto inBounds = [width, height](const Coordinate &point) {
+      return point.x >= 0 && point.x < width && point.y >= 0 && point.y < height;
+    };
+    if (!inBounds(start) || !inBounds(target)) {
+      throw std::runtime_error("إحداثيات البداية أو الهدف خارج حدود الشبكة.");
+    }
+
+    if (!document.contains("grid") || !document.at("grid").is_array()) {
+      throw std::runtime_error("grid يجب أن تكون مصفوفة ثنائية الأبعاد.");
+    }
+    const json &inputGrid = document.at("grid");
+    if (inputGrid.size() != static_cast<std::size_t>(height)) {
+      throw std::runtime_error("عدد صفوف grid لا يساوي height.");
+    }
+
+    std::vector<std::vector<double>> grid(
+        static_cast<std::size_t>(height),
+        std::vector<double>(static_cast<std::size_t>(width)));
+    for (int y = 0; y < height; ++y) {
+      if (!inputGrid.at(static_cast<std::size_t>(y)).is_array() ||
+          inputGrid.at(static_cast<std::size_t>(y)).size() !=
+              static_cast<std::size_t>(width)) {
+        throw std::runtime_error("كل صف في grid يجب أن يحتوي width قيمة.");
+      }
+      for (int x = 0; x < width; ++x) {
+        const json &cell = inputGrid.at(static_cast<std::size_t>(y)).at(
+            static_cast<std::size_t>(x));
+        if (!cell.is_number()) {
+          throw std::runtime_error("كل خلية في grid يجب أن تكون رقمًا.");
+        }
+        const double value = cell.get<double>();
+        if (!std::isfinite(value)) {
+          throw std::runtime_error("قيم grid يجب أن تكون أرقامًا منتهية.");
+        }
+        grid[y][x] = value;
+      }
+    }
+
+    if (grid[start.y][start.x] < 0.0) {
+      throw std::runtime_error("خلية البداية عائق؛ يجب أن تكون تكلفتها صفرًا أو أكبر.");
+    }
+    if (grid[target.y][target.x] < 0.0) {
+      throw std::runtime_error("خلية الهدف عائق؛ يجب أن تكون تكلفتها صفرًا أو أكبر.");
+    }
+
+    const int startId = toNodeId(start.x, start.y, width);
+    const int targetId = toNodeId(target.x, target.y, width);
+    const std::vector<Route> routes =
+        yenKShortestPaths(grid, width, height, startId, targetId, kMaxPaths);
+
+    if (routes.empty()) {
+      json output = {
+          {"status", "error"},
+          {"error_code", "NO_PATH"},
+          {"message", "لا يوجد مسار آمن بين البداية والهدف."},
+          {"paths", json::array()}};
+      std::cout << output.dump(2) << '\n';
+      return 0;
+    }
+
+    json output = {
+        {"status", "success"},
+        {"message", "تم العثور على المسارات مرتبة حسب أقل تكلفة."},
+        {"paths", json::array()}};
+    for (std::size_t i = 0; i < routes.size(); ++i) {
+      output["paths"].push_back({
+          {"rank", i + 1},
+          {"cost", routes[i].cost},
+          {"path", pathToJson(routes[i].nodes, width)}});
+    }
+    // Compatibility with the previous response shape: path is the best route.
+    output["path"] = pathToJson(routes.front().nodes, width);
+
+    std::cout << output.dump(2) << '\n';
+    return 0;
+  } catch (const json::parse_error &) {
+    printError("INVALID_JSON", "ملف الإدخال ليس JSON صالحًا.");
+    return 1;
+  } catch (const std::exception &error) {
+    printError("INVALID_INPUT", error.what());
+    return 1;
+  }
+}

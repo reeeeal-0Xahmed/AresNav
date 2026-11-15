@@ -1,0 +1,107 @@
+{
+  "mapId": "jezero-regional-200m",
+  "model": "experimental_regional_slope_and_local_mean_deviation",
+  "navigationScale": "regional",
+  "notFlightCertified": true,
+  "cellSizeMeters": 200,
+  "width": 353,
+  "height": 298,
+  "areaSizeMeters": {
+    "width": 70600,
+    "height": 59600
+  },
+  "center": {
+    "lon": 77.42982155,
+    "lat": 18.46611095
+  },
+  "crsWkt": "PROJCRS[\"unknown\",BASEGEOGCRS[\"unknown\",DATUM[\"unknown\",ELLIPSOID[\"unknown\",3396190,0,LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]],PRIMEM[\"Reference meridian\",0,ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]]],CONVERSION[\"unknown\",METHOD[\"Equidistant Cylindrical (Spherical)\",ID[\"EPSG\",1029]],PARAMETER[\"Latitude of 1st standard parallel\",18.46611095,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8823]],PARAMETER[\"Latitude of natural origin\",18.46611095,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",77.42982155,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"False easting\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]]",
+  "affine": [
+    200.0,
+    0.0,
+    -35300.0,
+    0.0,
+    -200.0,
+    29800.0
+  ],
+  "rowOrder": "north_to_south",
+  "projection": {
+    "type": "mars_spherical_equirectangular",
+    "radiusMeters": 3396190.0,
+    "standardParallelDegrees": 18.46611095,
+    "centralLongitudeDegrees": 77.42982155,
+    "latitudeOriginDegrees": 18.46611095
+  },
+  "requestedBounds": {
+    "west": 76.80291421306124,
+    "south": 17.96348644765699,
+    "east": 78.05672888693876,
+    "north": 18.96873545234301
+  },
+  "rasterBounds": {
+    "west": 76.80196141291616,
+    "south": 17.96336692522817,
+    "east": 78.05768168708384,
+    "north": 18.968854974771837
+  },
+  "requestedTrekUrl": "https://trek.nasa.gov/mars/#v=0.1&x=77.42982155&y=18.46611095&z=9&p=urn%3Aogc%3Adef%3Acrs%3AEPSG%3A%3A104905&d=&locale=&b=mars&e=76.80291421306124%2C17.96348644765699%2C78.05672888693876%2C18.96873545234301&sfz=&w=",
+  "selectionPolicy": "entire_url_e_extent_with_symmetric_subcell_padding",
+  "haloCells": 4,
+  "source": {
+    "originalUrl": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif",
+    "referencePage": "https://astrogeology.usgs.gov/search/map/mars_mgs_mola_mex_hrsc_blended_dem_global_200m",
+    "nominalPixelSpacingMeters": 200,
+    "sourceType": "published_HRSC_MOLA_blend_v2",
+    "sourceWindow": {
+      "x": 76102,
+      "y": 21044,
+      "width": 387,
+      "height": 313
+    },
+    "independent200mMeasurementsEverywhere": false
+  },
+  "elevationReference": "published USGS HRSC/MOLA blend topography; not height above local ground",
+  "elevationStatistics": {
+    "validCells": 105194,
+    "missingCells": 0,
+    "minMeters": -2811.5322265625,
+    "maxMeters": -1417.4329833984375,
+    "meanMeters": -2195.687255859375
+  },
+  "thresholds": {
+    "blockedSlopeGreaterOrEqualDegrees": 20,
+    "blockedLocalDeviationGreaterOrEqualMeters": 80,
+    "localMeanWindowPlanningCells": 5,
+    "localMeanWindowNominalMeters": 1000,
+    "safetyBufferMeters": 200,
+    "slopeCostBreaksDegrees": [
+      2,
+      5,
+      10
+    ],
+    "localDeviationCostBreaksMeters": [
+      10,
+      30,
+      60
+    ]
+  },
+  "counts": {
+    "totalPlanningCells": 105194,
+    "blockedPlanningCells": 1158,
+    "unknownPlanningCells": 0,
+    "byCost": {
+      "-1": 1158,
+      "1": 38770,
+      "2": 45753,
+      "4": 14913,
+      "8": 4600
+    }
+  },
+  "warnings": [
+    "Regional planning only, not small-rock or rover-scale hazard detection.",
+    "200 m is nominal raster spacing, not independent measurement accuracy at every cell.",
+    "Thresholds and a one-cell safety buffer are project assumptions, not NASA flight limits.",
+    "Negative elevations are normal; elevation sign and global mean do not define obstacles.",
+    "Physical slope accuracy varies with source coverage, interpolation and blend artifacts.",
+    "Routes connect snapped cell centers; user-selected positions are not exact rover waypoints."
+  ]
+}

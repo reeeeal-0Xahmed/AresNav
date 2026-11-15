@@ -1,0 +1,39 @@
+{
+  "width": 106694,
+  "height": 53347,
+  "blockShapes": [
+    [
+      1,
+      106694
+    ]
+  ],
+  "dtype": [
+    "int16"
+  ],
+  "nodata": -32768.0,
+  "res": [
+    0.003374120830641,
+    0.003374120830641
+  ],
+  "crsWkt": "GEOGCS[\"GCS_Mars_2000_Sphere\",DATUM[\"Mars_2000_(Sphere)\",SPHEROID[\"Mars_2000_Sphere_IAU_IAG\",3396190,0]],PRIMEM[\"Reference_Meridian\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]]",
+  "bounds": [
+    -180.0,
+    -89.99922395220543,
+    179.99844790441085,
+    90.0
+  ],
+  "transform": [
+    0.003374120830641,
+    0.0,
+    -180.0,
+    0.0,
+    -0.003374120830641,
+    90.0
+  ],
+  "scales": [
+    1.0
+  ],
+  "offsets": [
+    0.0
+  ]
+}

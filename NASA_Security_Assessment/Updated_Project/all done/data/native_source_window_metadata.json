@@ -1,0 +1,25 @@
+{
+  "key": {
+    "source": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif",
+    "extent": {
+      "west": 76.80291421306124,
+      "south": 17.96348644765699,
+      "east": 78.05672888693876,
+      "north": 18.96873545234301
+    },
+    "cellSizeMeters": 200.0
+  },
+  "source": {
+    "originalUrl": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif",
+    "referencePage": "https://astrogeology.usgs.gov/search/map/mars_mgs_mola_mex_hrsc_blended_dem_global_200m",
+    "nominalPixelSpacingMeters": 200,
+    "sourceType": "published_HRSC_MOLA_blend_v2",
+    "sourceWindow": {
+      "x": 76102,
+      "y": 21044,
+      "width": 387,
+      "height": 313
+    },
+    "independent200mMeasurementsEverywhere": false
+  }
+}

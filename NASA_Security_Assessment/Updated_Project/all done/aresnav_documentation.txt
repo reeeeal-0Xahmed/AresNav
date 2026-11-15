@@ -1,0 +1,145 @@
+================================================================================
+ARESNAV — MARS MISSION PLANNING & ROVER PATHFINDER BACKEND
+================================================================================
+
+A full-stack Mars mission planning backend for Jezero Crater (jezero-regional-200m).
+It combines a high-performance C++17 multi-route pathfinding solver with a Laravel
+mission intelligence layer that computes terrain slope/elevation profiles, evaluates
+live solar radiation via NASA DONKI, correlates Perseverance science waypoints, and
+serves WMTS map layers and orbital/rover imagery.
+
+--------------------------------------------------------------------------------
+1. ARCHITECTURE OVERVIEW
+--------------------------------------------------------------------------------
+
+* Native Solver (native/rover_pathfinder.cpp):
+  C++17 k-shortest pathfinder operating on a 353 x 298 traversability cost grid
+  (terrain.json), returning up to 3 distinct candidate routes in milliseconds.
+
+* Mission Briefing Engine (laravel/app/Services/RouteBriefing.php):
+  Evaluates candidate paths against real elevation data (elevations.json in meters),
+  computing max/mean slope angles, cumulative ascent/descent, EVA round-trip time,
+  nearby science stops, and an operational GO / CAUTION / NO-GO verdict.
+
+* Space Weather Service (laravel/app/Services/SpaceWeather.php):
+  Queries NASA DONKI solar flare telemetry to assess radiation risk
+  (NOMINAL, ELEVATED, STORM, or UNKNOWN).
+
+* Context & Science API (MarsContextController):
+  Exposes Mars WMTS map layers, NASA Mars image feeds, and seeded Perseverance
+  rover waypoints (SciencePoiSeeder).
+
+--------------------------------------------------------------------------------
+2. PROJECT STRUCTURE
+--------------------------------------------------------------------------------
+
+all done/
+├── data/                    # Precomputed Jezero Crater grid, elevations, and metadata
+├── native/                  # C++17 pathfinder source code
+├── tests/                   # Python native solver tests & PHP integration tests
+└── laravel/                 # Standalone Laravel backend application
+    ├── app/                 # Controllers, Services, Models, Console commands
+    ├── bin/                 # Compiled native solver binary (rover_pathfinder)
+    ├── config/mars.php      # Mission thresholds, map bounds, and NASA endpoints
+    ├── database/            # Migrations & SciencePoiSeeder
+    ├── routes/mars.php      # Mars mission planning API routes
+    └── storage/app/private/mars/jezero-regional-200m/
+        ├── terrain.json     # Traversability cost grid
+        └── elevations.json  # Elevation matrix (meters)
+
+--------------------------------------------------------------------------------
+3. SETUP & INSTALLATION
+--------------------------------------------------------------------------------
+
+A. Prerequisites:
+   - PHP 8.2+ and Composer
+   - C++17 Compiler (g++ or clang++) and nlohmann-json (only required if rebuilding
+     the binary for macOS/Windows or another CPU architecture)
+   - SQLite (default) or MySQL/PostgreSQL
+
+B. Compile Native Solver (Linux / macOS / WSL):
+   The repository includes a precompiled Linux x86_64 binary at
+   laravel/bin/rover_pathfinder. To recompile on your machine:
+
+     cd "all done"
+     mkdir -p native/nlohmann laravel/bin
+     curl -sL https://github.com/nlohmann/json/releases/latest/download/json.hpp -o native/nlohmann/json.hpp
+     g++ -O3 -std=c++17 -Inative native/rover_pathfinder.cpp -o laravel/bin/rover_pathfinder
+     chmod +x laravel/bin/rover_pathfinder
+
+C. Configure & Run Laravel Backend:
+
+     cd "all done/laravel"
+
+     # Install PHP dependencies
+     composer install
+
+     # Environment setup (use .env.example if .env is not present)
+     cp -n .env.example .env 2>/dev/null || true
+     php artisan key:generate
+
+     # Initialize SQLite database & seed Perseverance science waypoints
+     touch database/database.sqlite
+     php artisan migrate
+     php artisan db:seed --class=SciencePoiSeeder
+
+     # Verify NASA map layers & endpoints
+     php artisan mars:check-layers
+
+     # Start development server
+     php artisan serve --port=8001
+
+   Optional — NASA API Key:
+   Add NASA_API_KEY=your_free_key (from https://api.nasa.gov) to laravel/.env
+   to avoid DEMO_KEY rate limits on live DONKI space weather queries.
+
+--------------------------------------------------------------------------------
+4. API ENDPOINTS (/mars)
+--------------------------------------------------------------------------------
+
+GET  /mars/layers
+     Returns WMTS map tile layers (base_viking, hirise_jezero, geology, mola_color, ctx_5m).
+
+GET  /mars/science/pois
+     Lists Perseverance rover science waypoints and targets within Jezero Crater.
+
+GET  /mars/space-weather
+     Fetches live solar flare activity and radiation status from NASA DONKI.
+
+GET  /mars/images
+     Retrieves curated Mars & Jezero Crater imagery from NASA Image Library.
+
+GET  /mars/terrain/{mapId}
+     Returns grid dimensions, bounds, and version hash (e.g., jezero-regional-200m).
+
+POST /mars/routes
+     Computes up to 3 routes, GeoJSON features, terrain/EVA/radiation briefing,
+     and GO / CAUTION / NO-GO verdict.
+
+GET  /mars/routes/{requestId}
+     Retrieves a previously computed route request and briefing by UUID.
+
+Example POST /mars/routes Payload:
+(Note: Routes are registered under web middleware; include session cookies and
+X-XSRF-TOKEN header.)
+
+{
+  "map_id": "jezero-regional-200m",
+  "map_version": "<version_from_GET_terrain>",
+  "start": { "lon": 77.0, "lat": 18.1 },
+  "target": { "lon": 77.05, "lat": 18.15 }
+}
+
+--------------------------------------------------------------------------------
+5. RUNNING VERIFICATION TESTS
+--------------------------------------------------------------------------------
+
+From the root "all done" directory:
+
+  # 1. Native C++ solver unit tests
+  ROVER_BINARY=laravel/bin/rover_pathfinder python3 tests/test_native_routes.py
+
+  # 2. Full-stack Laravel + C++ + Briefing integration suite (19,000+ assertions)
+  php tests/backend_integration.php laravel/vendor/autoload.php laravel/bin/rover_pathfinder
+
+================================================================================
